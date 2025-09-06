@@ -1,0 +1,49 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH and deploy
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: 119.59.102.134
+          username: sarawut
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          script: |
+            set -e
+
+            # 1) โหลด nvm/ตั้ง PATH (กันกรณี shell ของ Actions ไม่อ่าน profile)
+            export NVM_DIR="$HOME/.nvm"
+            if [ -s "$NVM_DIR/nvm.sh" ]; then
+              . "$NVM_DIR/nvm.sh"
+            else
+              # ใช้ path แบบระบุเวอร์ชัน (จากเครื่องคุณใช้ v22.19.0)
+              export PATH="$HOME/.nvm/versions/node/v22.19.0/bin:$PATH"
+            fi
+
+            # 2) ไปยังโฟลเดอร์โปรเจ็กต์แล้วดึงโค้ด
+            cd ~/badminton-backend-git
+            git pull --ff-only
+
+            # 3) ติดตั้ง dependency (ถ้ามี package-lock ใช้ ci, ถ้าไม่มี fallback เป็น npm i)
+            if [ -f package-lock.json ]; then
+              npm ci --only=production || npm i --production
+            else
+              npm i --production
+            fi
+
+            # 4) restart ด้วย PM2 (ถ้า pm2 ยังไม่อยู่ใน PATH ให้ลองแบบระบุพาธ)
+            if command -v pm2 >/dev/null 2>&1; then
+              pm2 restart badtournament-backend-git || pm2 start server.js --name badtournament-backend-git
+              pm2 save
+            else
+              ~/.nvm/versions/node/v22.19.0/bin/pm2 restart badtournament-backend-git \
+                || ~/.nvm/versions/node/v22.19.0/bin/pm2 start server.js --name badtournament-backend-git
+              ~/.nvm/versions/node/v22.19.0/bin/pm2 save
+            fi
