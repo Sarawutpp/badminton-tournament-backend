@@ -6,7 +6,31 @@ const { connectDB } = require('./db');
 
 
 const app = express();
-app.use(cors());
+
+// --- START: แก้ไขส่วน CORS ---
+// กำหนด URL ของ Frontend ที่คุณอนุญาต
+const allowedOrigins = [
+  'http://localhost:3000', // สำหรับตอนพัฒนาบนเครื่อง
+  // *** ใส่ URL ของ Frontend ที่ deploy แล้วของคุณตรงนี้ ***
+  // เช่น 'https://your-domain.com'
+];
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // อนุญาตถ้า origin อยู่ใน list ที่เรากำหนด หรือในกรณีที่ origin เป็น undefined (เช่น เรียกจาก Postman)
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+};
+
+// ใช้ cors middleware พร้อมกับ options ที่กำหนด
+app.use(cors(corsOptions));
+// --- END: แก้ไขส่วน CORS ---
+
+
 app.use(express.json());
 
 
