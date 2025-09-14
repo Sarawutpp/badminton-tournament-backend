@@ -11,6 +11,7 @@ const app = express();
 // กำหนด URL ของ Frontend ที่คุณอนุญาต
 const allowedOrigins = [
   'http://localhost:3000', // สำหรับตอนพัฒนาบนเครื่อง
+  'http://localhost:5173', // *** เพิ่ม Port ที่ใช้งานจริงเข้าไป ***
   // *** ใส่ URL ของ Frontend ที่ deploy แล้วของคุณตรงนี้ ***
   // เช่น 'https://your-domain.com'
 ];
@@ -57,3 +58,4 @@ console.error('DB connection error:', err);
 
 
 module.exports = app;
+
