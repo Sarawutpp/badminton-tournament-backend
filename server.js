@@ -3,13 +3,11 @@ require('dotenv').config();
 const { createServer } = require('http');
 const app = require('./src/app');
 
-
-const PORT = process.env.PORT || 5000;
-const HOST = '0.0.0.0'; // <-- เพิ่มบรรทัดนี้: เพื่อให้ Server รับการเชื่อมต่อจากภายนอก
+// เปลี่ยน Port จาก 5000 เป็น 5001 เพื่อหลีกเลี่ยงการชนกัน
+const PORT = process.env.PORT || 5001; 
 const server = createServer(app);
 
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`API running on http://0.0.0.0:${PORT}`);
+});
 
-// แก้ไขบรรทัดนี้: เพิ่ม HOST เข้าไป
-server.listen(PORT, HOST, () => {
-  console.log(`API running on http://${HOST}:${PORT}`);
-});// deploy-test Sat 09/06/2025 14:34:30.23
