@@ -8,27 +8,10 @@ const { connectDB } = require('./db');
 const app = express();
 
 // --- START: แก้ไขส่วน CORS ---
-// กำหนด URL ของ Frontend ที่คุณอนุญาต
-const allowedOrigins = [
-  'http://localhost:3000', // สำหรับตอนพัฒนาบนเครื่อง
-  'http://localhost:5173', // *** เพิ่ม Port ที่ใช้งานจริงเข้าไป ***
-  // *** ใส่ URL ของ Frontend ที่ deploy แล้วของคุณตรงนี้ ***
-  // เช่น 'https://your-domain.com'
-];
-
-const corsOptions = {
-  origin: function (origin, callback) {
-    // อนุญาตถ้า origin อยู่ใน list ที่เรากำหนด หรือในกรณีที่ origin เป็น undefined (เช่น เรียกจาก Postman)
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-};
-
-// ใช้ cors middleware พร้อมกับ options ที่กำหนด
-app.use(cors(corsOptions));
+// สำหรับการทดสอบ ให้เปิดรับทุก Origin ชั่วคราว
+// เพื่อตรวจสอบว่าปัญหาอยู่ที่การตั้งค่า Whitelist หรือไม่
+console.log('CORS is configured to allow all origins for debugging.');
+app.use(cors());
 // --- END: แก้ไขส่วน CORS ---
 
 
