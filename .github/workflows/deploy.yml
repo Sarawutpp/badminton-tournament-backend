@@ -23,7 +23,7 @@ jobs:
             [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
             
             # 2) ไปยังโฟลเดอร์โปรเจ็กต์แล้วดึงโค้ด
-            cd ~/badminton-backend-git
+            cd ~/badminton-tournament-backend
             git pull origin main
 
             # 3) ติดตั้ง dependency
