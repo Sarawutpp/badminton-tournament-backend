@@ -3,7 +3,6 @@ require('dotenv').config();
 const { createServer } = require('http');
 const app = require('./src/app');
 
-// เปลี่ยน Port จาก 5000 เป็น 5001 เพื่อหลีกเลี่ยงการชนกัน
 const PORT = process.env.PORT || 5000; 
 const server = createServer(app);
 
