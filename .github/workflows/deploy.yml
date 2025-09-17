@@ -2,37 +2,48 @@ name: Deploy to VPS
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: SSH and deploy
-        uses: appleboy/ssh-action@v0.1.10
+      - name: SSH and Deploy
+        uses: appleboy/ssh-action@master
         with:
-          host: 119.59.102.134
-          username: sarawut
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: 22
+          host: ${{ secrets.VPS_SSH_HOST }}
+          username: ${{ secrets.VPS_SSH_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }} # Using SSH Key for security
+          port: ${{ secrets.VPS_SSH_PORT }}
           script: |
-            set -e
+            set -e # Exit script on any error
 
-            # 1) โหลด nvm/ตั้ง PATH
+            # Load nvm (Node Version Manager) to ensure node/npm/pm2 are available
             export NVM_DIR="$HOME/.nvm"
             [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
             
-            # 2) ไปยังโฟลเดอร์โปรเจ็กต์แล้วดึงโค้ด
-            cd ~/badminton-tournament-backend
-            git pull origin main
+            # Navigate to the project directory
+            # Create it if it doesn't exist
+            cd ~
+            if [ ! -d "badminton-tournament-backend" ]; then
+              git clone https://github.com/sarawutpp/badminton-tournament-backend.git
+            fi
+            cd badminton-tournament-backend
 
-            # 3) ติดตั้ง dependency
-            npm install --only=production
+            # Fetch the latest code and reset the current branch to match the remote
+            # This ensures old/deleted files are removed correctly
+            git fetch --all
+            git reset --hard origin/main
 
-            # 4) ------ START: แก้ไขส่วนนี้ ------
-            # ใช้ pm2 reload (หรือ restart) กับชื่อ process ที่ถูกต้อง
-            # เพื่อให้เกิด Zero-downtime deployment
-            pm2 reload badtournament-backend || pm2 start server.js --name badtournament-backend
-            # ------ END: แก้ไขส่วนนี้ ------
+            # Create the .env file from GitHub Secrets (CRITICAL STEP)
+            echo "MONGO_URI=${{ secrets.MONGO_URI }}" > .env
+
+            # Install production dependencies
+            npm install --force --only=production
+
+            # Reload the app for zero-downtime deployment.
+            # If the app is not running, it will start it.
+            pm2 reload "badminton-tournament-backend" || pm2 start server.js --name "badminton-tournament-backend"
             
+            # Save the current PM2 process list to restart on server reboot
             pm2 save
