@@ -28,4 +28,4 @@ GET http://localhost:4000/api/health -> {"ok": true}
 - POST   /api/tournaments/generate-groups
 - POST   /api/tournaments/generate-knockout
 - GET    /api/tournaments/overview
-//ทดสอบบบบบบบบ
+//ทดสอบ
