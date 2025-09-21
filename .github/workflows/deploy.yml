@@ -24,7 +24,7 @@ jobs:
           set -euo pipefail
           umask 077
 
-          # เขียน private key จาก Secret ลงไฟล์ชั่วคราว (เลี่ยง heredoc เพื่อกัน syntax เพี้ยน)
+          # เขียน private key จาก Secret ลงไฟล์ชั่วคราว (เลี่ยง heredoc เพี้ยน)
           printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > /tmp/gha_key
           chmod 600 /tmp/gha_key
 
@@ -32,7 +32,7 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -p "${PORT:-22}" "$HOST" >> ~/.ssh/known_hosts
 
-          # แสดง fingerprint ของคีย์ใน Secret (ไว้เทียบกับเครื่องเรา)
+          # แสดง fingerprint ของคีย์ใน Secret
           ssh-keygen -y -f /tmp/gha_key > /tmp/gha_key.pub
           echo "Runner Secret key fingerprint:"
           ssh-keygen -lf /tmp/gha_key.pub
@@ -40,36 +40,53 @@ jobs:
           echo "Trying SSH..."
           ssh -vvv -i /tmp/gha_key -p "${PORT:-22}" "$USER@$HOST" "echo 'GHA SSH OK'; uname -a"
 
-      # ขั้น deploy จริงด้วย appleboy (ส่งคีย์จาก Secret เข้า action)
+      # Deploy จริงด้วย appleboy
       - name: SSH and Deploy (appleboy)
         uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.VPS_SSH_HOST }}
-          username: sarawut                 # ล็อกให้ชัวร์
-          port: ${{ secrets.VPS_SSH_PORT }} # 22
-          key: ${{ secrets.VPS_SSH_KEY }}   # เนื้อ private key ทั้งก้อน (BEGIN..END)
+          username: sarawut
+          port: ${{ secrets.VPS_SSH_PORT }}       # ตั้ง Secret = 22
+          key: ${{ secrets.VPS_SSH_KEY }}         # เนื้อ private key ทั้งก้อน (BEGIN..END)
           debug: true
           timeout: 60s
           command_timeout: 5m
-          script_stop: true
           script: |
             set -euo pipefail
 
-            cd ~/badminton-backend-git || { echo "repo dir not found"; exit 10; }
+            # ----- ตั้งค่าพื้นฐาน (ใช้ชื่อโฟลเดอร์ / PM2 ตามที่แจ้ง) -----
+            APP_DIR="${APP_DIR:-$HOME/badminton-tournament-backend}"
+            REPO_URL="${REPO_URL:-https://github.com/Sarawutpp/badminton-tournament-backend.git}"
+            APP_NAME="badminton-tournament-backend"
+            BRANCH="${BRANCH:-main}"
 
-            # sync โค้ดให้ตรงกับ main
-            git fetch --all
-            git reset --hard origin/main
+            # ----- เตรียมโฟลเดอร์โค้ด: clone ถ้ายังไม่มี -----
+            if [ ! -d "$APP_DIR/.git" ]; then
+              mkdir -p "$APP_DIR"
+              rm -rf "$APP_DIR"/* 2>/dev/null || true
+              git clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
+            fi
 
-            # เขียน .env จาก Secrets (ถ้ามี)
+            cd "$APP_DIR"
+            git fetch origin "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+
+            # ----- เขียน .env จาก Secrets (ถ้ามี) -----
             # echo "MONGO_URI=${{ secrets.MONGO_URI }}" > .env
 
-            # ติดตั้ง dependencies โหมดโปรดักชัน
-            npm ci --only=production || npm install --only=production
+            # ----- ติดตั้ง dependencies โหมดโปรดักชัน -----
+            if command -v npm >/dev/null 2>&1; then
+              npm ci --only=production || npm install --only=production
+            fi
 
-            # reload ผ่าน pm2 ถ้ามีอยู่แล้ว, ถ้าไม่มีก็ start ใหม่
-            pm2 describe badminton-tournament-backend >/dev/null 2>&1 \
-              && pm2 reload badminton-tournament-backend \
-              || pm2 start server.js --name badminton-tournament-backend
+            # ----- ติดตั้ง pm2 ถ้ายังไม่มี -----
+            if ! command -v pm2 >/dev/null 2>&1; then
+              npm i -g pm2
+            fi
+
+            # ----- reload/start pm2 ด้วยชื่อที่กำหนด -----
+            pm2 describe "$APP_NAME" >/dev/null 2>&1 \
+              && pm2 reload "$APP_NAME" \
+              || pm2 start server.js --name "$APP_NAME"
 
             pm2 save
