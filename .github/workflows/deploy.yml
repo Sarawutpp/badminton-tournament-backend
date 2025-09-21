@@ -3,6 +3,7 @@ name: Deploy to VPS
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -12,40 +13,63 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Start ssh-agent
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
-
+      # ใช้คีย์จาก Secret โดยตรง (ไม่พึ่ง ssh-agent) เพื่อตรวจว่าเข้าเครื่องได้จริง
       - name: Known hosts & test login
         env:
-          HOST: ${{ secrets.VPS_SSH_HOST }}
-          USER: ${{ secrets.VPS_SSH_USERNAME }}
-          PORT: ${{ secrets.VPS_SSH_PORT }}
+          HOST: ${{ secrets.VPS_SSH_HOST }}       # เช่น 119.59.102.134
+          USER: ${{ secrets.VPS_SSH_USERNAME }}   # แนะนำให้ตั้งเป็น "sarawut"
+          PORT: ${{ secrets.VPS_SSH_PORT }}       # ตั้ง Secret = 22 ถ้าใช้พอร์ตปกติ
         run: |
-          set -e
+          set -euxo pipefail
+
+          # เขียน private key จาก Secret ลงไฟล์ชั่วคราว แล้วตั้งสิทธิ์
+          cat > /tmp/gha_key <<'EOF'
+${{ secrets.VPS_SSH_KEY }}
+EOF
+          chmod 600 /tmp/gha_key
+
+          # กัน prompt host key
           mkdir -p ~/.ssh
           ssh-keyscan -p "${PORT:-22}" "$HOST" >> ~/.ssh/known_hosts
-          ssh -vvv -p "${PORT:-22}" "$USER@$HOST" "echo 'GHA SSH OK'; uname -a"
 
+          # แสดง fingerprint ของคีย์ใน Secret (ไว้เทียบกับเครื่องเรา)
+          ssh-keygen -y -f /tmp/gha_key > /tmp/gha_key.pub
+          echo "Runner Secret key fingerprint:"
+          ssh-keygen -lf /tmp/gha_key.pub
+
+          echo "Trying SSH..."
+          ssh -vvv -i /tmp/gha_key -p "${PORT:-22}" "$USER@$HOST" "echo 'GHA SSH OK'; uname -a"
+
+      # ขั้น deploy จริงด้วย appleboy (ส่งคีย์จาก Secret เข้า action)
       - name: SSH and Deploy (appleboy)
         uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.VPS_SSH_HOST }}
-          username: ${{ secrets.VPS_SSH_USERNAME }}
-          port: ${{ secrets.VPS_SSH_PORT }}
-          key: ${{ secrets.VPS_SSH_KEY }}
+          username: sarawut                         # ล็อกให้ชัด กันสะกดผิดจาก Secret
+          port: ${{ secrets.VPS_SSH_PORT || 22 }}  # ถ้าไม่ได้ตั้ง Secret จะใช้ 22
+          key: ${{ secrets.VPS_SSH_KEY }}          # เนื้อ private key ทั้งก้อน (BEGIN..END)
           debug: true
           timeout: 60s
           command_timeout: 5m
           script_stop: true
           script: |
             set -euo pipefail
-            cd ~/badminton-backend-git
+
+            cd ~/badminton-backend-git || { echo "repo dir not found"; exit 10; }
+
+            # sync โค้ดให้ตรงกับ main
             git fetch --all
             git reset --hard origin/main
+
+            # ตัวอย่าง .env (ถ้ามีให้ใช้ Secrets เขียนค่า)
+            # echo "MONGO_URI=${{ secrets.MONGO_URI }}" > .env
+
+            # ติดตั้ง dependencies โหมดโปรดักชัน
             npm ci --only=production || npm install --only=production
+
+            # reload ผ่าน pm2 ถ้ามีอยู่แล้ว, ถ้าไม่มีก็ start ใหม่
             pm2 describe badminton-tournament-backend >/dev/null 2>&1 \
               && pm2 reload badminton-tournament-backend \
               || pm2 start server.js --name badminton-tournament-backend
+
             pm2 save
