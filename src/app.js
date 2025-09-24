@@ -53,6 +53,7 @@ app.get('/api/health', (_req, res) => res.json({ ok: true }));
 app.use('/api/teams', require('./routes/team.routes'));
 app.use('/api/matches', require('./routes/match.routes'));
 app.use('/api/tournaments', require('./routes/tournament.routes'));
+app.use('/api/players', require('./routes/player.routes'));
 
 // ===== DB Connect =====
 (async () => {
