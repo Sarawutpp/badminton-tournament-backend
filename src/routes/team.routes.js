@@ -1,64 +1,81 @@
-// src/routes/team.routes.js
 const router = require('express').Router();
-const Player = require('../models/player.model');
-const Team = require('../models/team.model');
 
 
-// CREATE team (พร้อมสร้าง players ถ้าส่งมาด้วย)
+// สร้างทีม
 router.post('/', async (req, res, next) => {
 try {
-const { teamName, handLevel, group, players, managerName, tel, lineId, teamCode } = req.body;
-
-
-let playerIds = [];
-if (Array.isArray(players) && players.length) {
-const created = await Player.insertMany(players);
-playerIds = created.map(p => p._id);
-}
-
-
-// ถ้าไม่ได้ส่ง teamCode มา ให้ gen อัตโนมัติป้องกันชน index
-const code = teamCode ?? `TM-${Date.now().toString().slice(-6)}`;
-
-
-const team = await Team.create({
-teamName,
+const {
+teamCode,
+competitionType,
 handLevel,
-group,
-teamCode: code, // ✅ รับค่าเข้าโมเดลจริง ๆ
-players: playerIds,
+players,
 managerName,
-tel,
-lineId
+phone,
+lineId,
+} = req.body;
+
+
+if (!competitionType || !['Singles', 'Doubles'].includes(competitionType)) {
+return res.status(422).json({ message: 'competitionType ต้องเป็น Singles หรือ Doubles' });
+}
+
+
+const level = normalizeHand(handLevel || '');
+if (!level) return res.status(422).json({ message: 'handLevel ไม่ถูกต้อง' });
+
+
+if (!Array.isArray(players) || players.length < 1) {
+return res.status(422).json({ message: 'ต้องมีผู้เล่นอย่างน้อย 1 คน' });
+}
+if (competitionType === 'Doubles' && players.length > 2) {
+return res.status(422).json({ message: 'Doubles ได้สูงสุด 2 คน' });
+}
+
+
+// ตรวจผู้เล่นว่ามีอยู่จริงครบ
+const found = await Player.find({ _id: { $in: players } }).select('_id');
+if (found.length !== players.length) {
+return res.status(404).json({ message: 'มี playerId ไม่ถูกต้อง' });
+}
+
+
+// teamCode
+let code = (teamCode || '').trim();
+if (!code) {
+for (let i = 0; i < 5; i++) {
+const c = genCode('TM', level.replace(/\s+/g, ''));
+const exist = await Team.exists({ teamCode: c });
+if (!exist) { code = c; break; }
+}
+if (!code) throw new Error('Cannot generate unique teamCode');
+}
+
+
+const doc = await Team.create({
+teamCode: code,
+competitionType,
+handLevel: level,
+players,
+managerName: managerName ? managerName.trim() : undefined,
+phone: phone ? phone.trim() : undefined,
+lineId: lineId ? lineId.trim() : undefined,
 });
 
 
-res.status(201).json(team);
+return res.status(201).json(doc);
 } catch (err) {
-next(err);
+return next(err);
 }
 });
 
 
-// LIST Teams
+// ดึงทีมทั้งหมด (ล่าสุดก่อน)
 router.get('/', async (_req, res, next) => {
 try {
-const teams = await Team.find().populate('players').sort({ createdAt: -1 });
-res.json(teams);
+const rows = await Team.find().populate('players').sort({ createdAt: -1 });
+return res.json(rows);
 } catch (err) {
-next(err);
-}
-});
-
-
-// LIST by group (standings view)
-router.get('/group/:name', async (req, res, next) => {
-try {
-const group = req.params.name;
-const teams = await Team.find({ group }).sort({ points: -1, scoreDifference: -1 });
-res.json(teams);
-} catch (err) {
-next(err);
+return next(err);
 }
 });
 
