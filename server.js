@@ -1,8 +1,6 @@
-const app = require('./src/app');
+const app = require('./app'); // แก้จาก './src/app' เป็น './app'
 
-// เปลี่ยน Port เริ่มต้น (Default) ให้เป็น 5000
-// ระบบจะพยายามหาค่า PORT จากไฟล์ .env ก่อน ถ้าไม่เจอถึงจะใช้ 5000
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5000; // ใช้ 5000 ตามโปรเจกต์
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);

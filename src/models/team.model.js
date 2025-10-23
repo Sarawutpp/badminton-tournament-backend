@@ -4,10 +4,11 @@ const { Schema } = mongoose;
 const teamSchema = new Schema(
   {
     // ข้อมูลหลักของทีม
-    teamCode: { type: String, unique: true, index: true }, // รหัสทีมสั้นๆ ใช้อ้างอิง/นับคะแนน
-    teamName: { type: String, required: true, trim: true }, // 👈 ชื่อทีม (ใหม่)
+    teamCode: { type: String, unique: true, index: true },     // เช่น N-001, NB-002
+    teamName: { type: String, required: true, trim: true },
     competitionType: { type: String, enum: ['Singles', 'Doubles'], required: true },
-    handLevel: { type: String, required: true }, // โค้ดมือแบบย่อ เช่น N/NB/Baby/BG-/Mix
+    handLevel: { type: String, required: true },               // เช่น N, NB, C, BABY...
+    group: { type: String, default: null },                    // กลุ่ม A/B/C/...
 
     // สมาชิก
     players: [{ type: Schema.Types.ObjectId, ref: 'Player', required: true }],
@@ -21,10 +22,14 @@ const teamSchema = new Schema(
     matchesPlayed: { type: Number, default: 0 },
     wins: { type: Number, default: 0 },
     losses: { type: Number, default: 0 },
-    points: { type: Number, default: 0 },
-    scoreDifference: { type: Number, default: 0 },
+    points: { type: Number, default: 0 },           // ชนะ=2, แพ้=1
+    scoreDifference: { type: Number, default: 0 },  // ได้-เสีย
   },
   { timestamps: true }
 );
+
+// indexes ที่ใช้บ่อย
+teamSchema.index({ handLevel: 1 });
+teamSchema.index({ group: 1 });
 
 module.exports = mongoose.model('Team', teamSchema);

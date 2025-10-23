@@ -1,25 +1,26 @@
 const router = require('express').Router();
 const Team = require('../models/team.model');
 const Player = require('../models/player.model');
-const { genCode } = require('../utils/codes');
+const { getNextSequence, pad } = require('../utils/sequence.util');
 
+// ปรับชื่อมือให้เป็นมาตรฐานจากอินพุต
 function normalizeHand(input = '') {
   return String(input)
-    .replace(/\(.*?\)/g, '')
-    .replace(/^เดี่ยว\s+/, '')
-    .replace('BG (Mixs)', 'Mix')
-    .trim();
+    .replace(/\(.*?\)/g, '')   // ตัด "(..)" ออก เช่น "N (16 ทีม)" -> "N"
+    .replace(/^เดี่ยว\s+/, '') // ตัดคำว่า "เดี่ยว "
+    .trim()
+    .toUpperCase();            // ใช้ตัวใหญ่ทั้งหมด: N/NB/C/BABY...
 }
 
 // CREATE team
 router.post('/', async (req, res, next) => {
   try {
     const {
-      teamCode,
-      teamName,            // 👈 รับชื่อทีม
-      competitionType,
-      handLevel,
-      players,
+      teamCode,            // optional
+      teamName,            // required
+      competitionType,     // 'Singles' | 'Doubles'
+      handLevel,           // N/NB/C/BABY...
+      players,             // [playerId...]
       managerName,
       phone,
       lineId,
@@ -28,7 +29,7 @@ router.post('/', async (req, res, next) => {
     if (!teamName || !String(teamName).trim()) {
       return res.status(422).json({ message: 'teamName จำเป็น' });
     }
-    if (!competitionType || !['Singles','Doubles'].includes(competitionType)) {
+    if (!competitionType || !['Singles', 'Doubles'].includes(competitionType)) {
       return res.status(422).json({ message: 'competitionType ต้องเป็น Singles หรือ Doubles' });
     }
 
@@ -48,20 +49,19 @@ router.post('/', async (req, res, next) => {
       return res.status(404).json({ message: 'มี playerId ไม่ถูกต้อง' });
     }
 
-    // teamCode อัตโนมัติถ้าไม่ได้ส่งมา
+    // teamCode: <HAND>-NNN (เลขแยกตามมือ)
     let code = (teamCode || '').trim();
     if (!code) {
-      for (let i = 0; i < 5; i++) {
-        const c = genCode('TM', level.replace(/\s+/g, ''));
-        const exist = await Team.exists({ teamCode: c });
-        if (!exist) { code = c; break; }
-      }
-      if (!code) throw new Error('Cannot generate unique teamCode');
+      const seq = await getNextSequence(`TEAM_${level}`); // key: TEAM_N, TEAM_NB, ...
+      code = `${level}-${pad(seq, 3)}`;                   // N-001, NB-012
+    } else {
+      const exist = await Team.exists({ teamCode: code });
+      if (exist) return res.status(409).json({ message: 'teamCode ซ้ำ' });
     }
 
     const doc = await Team.create({
       teamCode: code,
-      teamName: String(teamName).trim(),  // 👈 บันทึกชื่อทีม
+      teamName: String(teamName).trim(),
       competitionType,
       handLevel: level,
       players,
@@ -76,10 +76,14 @@ router.post('/', async (req, res, next) => {
   }
 });
 
-// LIST teams (ล่าสุดก่อน)
-router.get('/', async (_req, res, next) => {
+// LIST teams (?handLevel=...)
+router.get('/', async (req, res, next) => {
   try {
-    const rows = await Team.find().populate('players').sort({ createdAt: -1 });
+    const { handLevel } = req.query;
+    const filter = {};
+    if (handLevel) filter.handLevel = normalizeHand(handLevel);
+
+    const rows = await Team.find(filter).populate('players').sort({ createdAt: -1 });
     return res.json(rows);
   } catch (err) {
     return next(err);
