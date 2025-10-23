@@ -42,14 +42,20 @@ router.post('/generate-groups/manual', async (req, res, next) => {
             round: `Group ${letter}`,
             team1: ids[i],
             team2: ids[j],
-            status: 'pending'
+            status: 'pending',
           });
           created++;
         }
       }
     }
 
-    return res.status(201).json({ ok: true, createdMatches: created, groups: Object.keys(groups) });
+    return res
+      .status(201)
+      .json({
+        ok: true,
+        createdMatches: created,
+        groups: Object.keys(groups),
+      });
   } catch (err) {
     next(err);
   }
@@ -58,13 +64,18 @@ router.post('/generate-groups/manual', async (req, res, next) => {
 // ---- Keep: Random grouping (เดิม) ----
 router.post('/generate-groups', async (req, res, next) => {
   try {
-    const { handLevel, groupNames = ['Group A','Group B'], tournamentId = 'default' } = req.body;
+    const {
+      handLevel,
+      groupNames = ['Group A', 'Group B'],
+      tournamentId = 'default',
+    } = req.body;
     const teams = await Team.find(handLevel ? { handLevel } : {});
-    if (!teams.length) return res.status(400).json({ message: 'No teams to group' });
+    if (!teams.length)
+      return res.status(400).json({ message: 'No teams to group' });
 
     // shuffle
     const arr = teams.sort(() => Math.random() - 0.5);
-    const groups = groupNames.map(name => ({ name, teams: [] }));
+    const groups = groupNames.map((name) => ({ name, teams: [] }));
     // round-robin assignment
     arr.forEach((t, i) => groups[i % groups.length].teams.push(t));
 
@@ -84,7 +95,7 @@ router.post('/generate-groups', async (req, res, next) => {
             round: `Group ${groupLetter}`,
             team1: g.teams[i]._id,
             team2: g.teams[j]._id,
-            status: 'pending'
+            status: 'pending',
           });
           createdMatches.push(m);
         }
@@ -92,8 +103,11 @@ router.post('/generate-groups', async (req, res, next) => {
     }
 
     res.status(201).json({
-      groups: groups.map(g => ({ name: g.name, teamCount: g.teams.length })),
-      matches: createdMatches.length
+      groups: groups.map((g) => ({
+        name: g.name,
+        teamCount: g.teams.length,
+      })),
+      matches: createdMatches.length,
     });
   } catch (err) {
     next(err);
@@ -103,11 +117,10 @@ router.post('/generate-groups', async (req, res, next) => {
 // ---- Keep: Knockout (เดิม: เอาอันดับ 1-2 ของแต่ละกลุ่มไปจับคู่) ----
 router.post('/generate-knockout', async (req, res, next) => {
   try {
-    const { groupLetters = ['A','B'], tournamentId = 'default' } = req.body;
+    const { groupLetters = ['A', 'B'], tournamentId = 'default' } = req.body;
     const byGroup = {};
     for (const letter of groupLetters) {
-      const teams = await Team
-        .find({ group: letter })
+      const teams = await Team.find({ group: letter })
         .sort({ points: -1, scoreDifference: -1 })
         .limit(2);
       byGroup[letter] = teams;
@@ -115,8 +128,10 @@ router.post('/generate-knockout', async (req, res, next) => {
 
     // Pairing: A1 vs B2, B1 vs A2 (ต่อยอดเพิ่ม C/D ได้ภายหลัง)
     const pairs = [];
-    if (byGroup['A']?.[0] && byGroup['B']?.[1]) pairs.push([byGroup['A'][0], byGroup['B'][1]]);
-    if (byGroup['B']?.[0] && byGroup['A']?.[1]) pairs.push([byGroup['B'][0], byGroup['A'][1]]);
+    if (byGroup['A']?.[0] && byGroup['B']?.[1])
+      pairs.push([byGroup['A'][0], byGroup['B'][1]]);
+    if (byGroup['B']?.[0] && byGroup['A']?.[1])
+      pairs.push([byGroup['B'][0], byGroup['A'][1]]);
 
     const created = [];
     for (const [t1, t2] of pairs) {
@@ -125,7 +140,7 @@ router.post('/generate-knockout', async (req, res, next) => {
         round: 'Quarter-final',
         team1: t1?._id,
         team2: t2?._id,
-        status: 'pending'
+        status: 'pending',
       });
       created.push(m);
     }
@@ -140,7 +155,7 @@ router.get('/overview', async (_req, res, next) => {
   try {
     const [teamCount, matchCount] = await Promise.all([
       require('../models/team.model').countDocuments(),
-      require('../models/match.model').countDocuments()
+      require('../models/match.model').countDocuments(),
     ]);
     res.json({ teamCount, matchCount });
   } catch (err) {
@@ -157,3 +172,4 @@ router.post('/generate-groups/manual', async (req, res, next) => {
 });
 
 module.exports = router;
+
