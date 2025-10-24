@@ -3,65 +3,47 @@ const Team = require('../models/team.model');
 const Match = require('../models/match.model');
 const { manualGroupAndGenerate } = require('../services/tournament.service');
 
-// ---- NEW: Manual grouping + create round-robin matches ----
+// ---- helper: ทำให้ชื่อมือเป็นรูปแบบมาตรฐาน (ให้ค้นง่าย) ----
+function normalizeHand(input = '') {
+  return String(input)
+    .replace(/\(.*?\)/g, '')   // ตัด "(...)" เช่น "N (16 ทีม)" -> "N"
+    .replace(/^เดี่ยว\s+/, '') // ตัดคำว่า "เดี่ยว "
+    .trim()
+    .toUpperCase();            // ตัวพิมพ์ใหญ่
+}
+
+/**
+ * ----------------------------------------------------------------
+ * 1) จัดกลุ่มแบบ Manual + สร้างแมตช์พบกันหมด (ใช้กับหน้า Generator)
+ * ----------------------------------------------------------------
+ * body:
+ * {
+ *   "tournamentId": "default",          // optional
+ *   "tournamentName": "Moodeng Cup",    // optional
+ *   "handLevel": "N",
+ *   "groups": { "A": ["teamId1","teamId2"], "B": ["teamId3","teamId4"] }
+ * }
+ */
 router.post('/generate-groups/manual', async (req, res, next) => {
   try {
-    const { handLevel, groups = {}, tournamentId = 'default' } = req.body;
-    if (!handLevel || !groups || typeof groups !== 'object') {
-      return res.status(400).json({ message: 'handLevel และ groups จำเป็น' });
-    }
-
-    // ตรวจสอบทีมที่ถูกส่งมาทั้งหมด
-    const allIds = Object.values(groups).flat();
-    const teams = await Team.find({ _id: { $in: allIds } });
-    if (teams.length !== allIds.length) {
-      return res.status(400).json({ message: 'พบ teamId ไม่ถูกต้องใน groups' });
-    }
-
-    // อัปเดต group บน Team (ตั้งค่าเป็นตัวอักษร A/B/C เท่านั้น)
-    for (const [letter, ids] of Object.entries(groups)) {
-      if (!Array.isArray(ids)) continue;
-      await Team.updateMany({ _id: { $in: ids } }, { $set: { group: letter } });
-    }
-    // (ทางเลือก) เคลียร์ group ของทีมมือเดียวกันที่ไม่อยู่ใน payload
-    await Team.updateMany(
-      { handLevel, _id: { $nin: allIds } },
-      { $set: { group: null } }
-    );
-
-    // ลบแมตช์ Group เดิมของทัวร์นี้ (กันซ้ำ) แล้วสร้างใหม่
-    await Match.deleteMany({ tournamentId, round: { $regex: /^Group\s/i } });
-
-    let created = 0;
-    for (const [letter, ids] of Object.entries(groups)) {
-      if (!ids || ids.length < 2) continue; // กลุ่ม < 2 ทีม ไม่ต้องสร้าง
-      for (let i = 0; i < ids.length; i++) {
-        for (let j = i + 1; j < ids.length; j++) {
-          await Match.create({
-            tournamentId,
-            round: `Group ${letter}`,
-            team1: ids[i],
-            team2: ids[j],
-            status: 'pending',
-          });
-          created++;
-        }
-      }
-    }
-
-    return res
-      .status(201)
-      .json({
-        ok: true,
-        createdMatches: created,
-        groups: Object.keys(groups),
-      });
+    const result = await manualGroupAndGenerate(req.body);
+    return res.status(201).json(result);
   } catch (err) {
     next(err);
   }
 });
 
-// ---- Keep: Random grouping (เดิม) ----
+/**
+ * ------------------------------------------------------
+ * 2) สุ่มจัดกลุ่มอัตโนมัติ (เผื่ออยากทำปุ่ม Auto Group)
+ * ------------------------------------------------------
+ * body:
+ * {
+ *   "handLevel": "N",
+ *   "groupNames": ["Group A","Group B","Group C","Group D"],
+ *   "tournamentId": "default"
+ * }
+ */
 router.post('/generate-groups', async (req, res, next) => {
   try {
     const {
@@ -69,88 +51,149 @@ router.post('/generate-groups', async (req, res, next) => {
       groupNames = ['Group A', 'Group B'],
       tournamentId = 'default',
     } = req.body;
-    const teams = await Team.find(handLevel ? { handLevel } : {});
-    if (!teams.length)
-      return res.status(400).json({ message: 'No teams to group' });
 
-    // shuffle
+    const level = handLevel ? normalizeHand(handLevel) : undefined;
+    const teams = await Team.find(level ? { handLevel: level } : {});
+    if (!teams.length) {
+      return res.status(400).json({ message: 'No teams to group' });
+    }
+
+    // สุ่มแล้วกระจายลงกลุ่ม (round-robin assignment)
     const arr = teams.sort(() => Math.random() - 0.5);
     const groups = groupNames.map((name) => ({ name, teams: [] }));
-    // round-robin assignment
     arr.forEach((t, i) => groups[i % groups.length].teams.push(t));
 
-    // save group letter on team and create round-robin matches per group
-    const createdMatches = [];
+    // เซ็ต group ให้ทีม + สร้างแมตช์พบกันหมดให้แต่ละกลุ่ม
+    let created = 0;
     for (const g of groups) {
-      const groupLetter = g.name.split(' ').pop(); // e.g., 'A'
+      const groupLetter = g.name.split(' ').pop(); // 'A','B',...
       for (const t of g.teams) {
         t.group = groupLetter;
         await t.save();
       }
-      // round robin matches: every pair meets once
       for (let i = 0; i < g.teams.length; i++) {
         for (let j = i + 1; j < g.teams.length; j++) {
-          const m = await Match.create({
+          await Match.create({
             tournamentId,
             round: `Group ${groupLetter}`,
             team1: g.teams[i]._id,
             team2: g.teams[j]._id,
             status: 'pending',
           });
-          createdMatches.push(m);
+          created++;
         }
       }
     }
 
-    res.status(201).json({
-      groups: groups.map((g) => ({
-        name: g.name,
-        teamCount: g.teams.length,
-      })),
-      matches: createdMatches.length,
+    return res.status(201).json({
+      groups: groups.map((g) => ({ name: g.name, teamCount: g.teams.length })),
+      matches: created,
     });
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 });
 
-// ---- Keep: Knockout (เดิม: เอาอันดับ 1-2 ของแต่ละกลุ่มไปจับคู่) ----
+/**
+ * --------------------------------------------------------------
+ * 3) สร้างสาย Knockout จากอันดับกลุ่ม (A1 v B2, B1 v A2, ...)
+ * --------------------------------------------------------------
+ * body: { "groupLetters": ["A","B","C","D"], "tournamentId": "default" }
+ */
 router.post('/generate-knockout', async (req, res, next) => {
   try {
     const { groupLetters = ['A', 'B'], tournamentId = 'default' } = req.body;
+
+    // ดึงอันดับ 1-2 ของแต่ละกลุ่ม (เรียงตามคะแนน/ผลต่าง/ชนะ)
     const byGroup = {};
-    for (const letter of groupLetters) {
-      const teams = await Team.find({ group: letter })
-        .sort({ points: -1, scoreDifference: -1 })
+    for (const L of groupLetters) {
+      const top2 = await Team.find({ group: L })
+        .sort({ points: -1, scoreDifference: -1, wins: -1 })
         .limit(2);
-      byGroup[letter] = teams;
+      byGroup[L] = top2;
     }
 
-    // Pairing: A1 vs B2, B1 vs A2 (ต่อยอดเพิ่ม C/D ได้ภายหลัง)
+    // ประกบคู่แบบมาตรฐานเป็นคู่ ๆ
     const pairs = [];
-    if (byGroup['A']?.[0] && byGroup['B']?.[1])
-      pairs.push([byGroup['A'][0], byGroup['B'][1]]);
-    if (byGroup['B']?.[0] && byGroup['A']?.[1])
-      pairs.push([byGroup['B'][0], byGroup['A'][1]]);
+    for (let i = 0; i < groupLetters.length; i += 2) {
+      const G1 = groupLetters[i];
+      const G2 = groupLetters[i + 1];
+      if (!G2) break;
+      const [A1, A2] = byGroup[G1] || [];
+      const [B1, B2] = byGroup[G2] || [];
+      if (A1 && B2) pairs.push([A1._id, B2._id]);
+      if (B1 && A2) pairs.push([B1._id, A2._id]);
+    }
 
-    const created = [];
+    // (ออปชัน) ลบสาย KO เดิมก่อน
+    await Match.deleteMany({
+      tournamentId,
+      round: { $in: ['Round of 16', 'Quarter-final', 'Semifinal', 'Final'] },
+    });
+
+    let created = 0;
     for (const [t1, t2] of pairs) {
-      const m = await Match.create({
+      await Match.create({
         tournamentId,
-        round: 'Quarter-final',
-        team1: t1?._id,
-        team2: t2?._id,
+        round: 'Quarter-final',  // ปรับระดับรอบตามจำนวนคู่ได้
+        team1: t1,
+        team2: t2,
         status: 'pending',
       });
-      created.push(m);
+      created++;
     }
-    res.status(201).json({ created: created.length });
-  } catch (err) {
-    next(err);
-  }
+
+    return res.status(201).json({ created, pairs: pairs.length });
+  } catch (err) { next(err); }
 });
 
-// ---- Overview (เดิม) ----
+/**
+ * ----------------------------------------------------------------
+ * 4) Standings แบบ nested (ดึงไปโชว์หน้า Admin/Standings ได้เลย)
+ * ----------------------------------------------------------------
+ * query: ?handLevel=N  (ถ้าส่งมาจะกรองเฉพาะมือ)
+ */
+router.get('/standings', async (req, res, next) => {
+  try {
+    const { handLevel } = req.query;
+    const filter = {};
+    if (handLevel) filter.handLevel = normalizeHand(handLevel);
+
+    const teams = await Team.find(filter).populate('players').lean();
+
+    // รวมเป็นรูปแบบ { level: [{ groupName, teams: [...] }, ...], ... }
+    const byLevel = {};
+    for (const t of teams) {
+      const level = t.handLevel || 'UNKNOWN';
+      if (!byLevel[level]) byLevel[level] = {};
+      if (!t.group) continue; // ยังไม่ถูกจัดกลุ่ม
+      if (!byLevel[level][t.group]) byLevel[level][t.group] = [];
+      byLevel[level][t.group].push(t);
+    }
+
+    const result = Object.entries(byLevel)
+      .map(([level, groups]) => {
+        const items = Object.entries(groups)
+          .map(([groupName, ts]) => {
+            ts.sort((a, b) =>
+              (b.points ?? 0) - (a.points ?? 0) ||
+              (b.scoreDifference ?? 0) - (a.scoreDifference ?? 0) ||
+              (b.wins ?? 0) - (a.wins ?? 0)
+            );
+            return { groupName, teams: ts };
+          })
+          .sort((a, b) => a.groupName.localeCompare(b.groupName));
+        return { level, groups: items };
+      })
+      .sort((a, b) => a.level.localeCompare(b.level));
+
+    return res.json(result);
+  } catch (err) { next(err); }
+});
+
+/**
+ * -----------------------------
+ * 5) Overview (ไว้หน้า Dashboard)
+ * -----------------------------
+ */
 router.get('/overview', async (_req, res, next) => {
   try {
     const [teamCount, matchCount] = await Promise.all([
@@ -158,18 +201,7 @@ router.get('/overview', async (_req, res, next) => {
       require('../models/match.model').countDocuments(),
     ]);
     res.json({ teamCount, matchCount });
-  } catch (err) {
-    next(err);
-  }
-});
-router.post('/generate-groups/manual', async (req, res, next) => {
-  try {
-    const result = await manualGroupAndGenerate(req.body);
-    res.status(201).json(result);
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 });
 
 module.exports = router;
-
