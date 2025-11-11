@@ -6,17 +6,17 @@ const { connectDB } = require('./db');
 
 const app = express();
 
-// ---------- CORS (แก้ใหม่) ----------
+// ---------- CORS ----------
 /**
  * อนุญาตเฉพาะ origin ที่กำหนด เพื่อให้ใช้คู่กับ credentials ได้
- * - ตั้งค่าเพิ่มเติมผ่าน ENV ได้: ALLOW_ORIGINS="http://localhost:5173,https://your-frontend.example"
+ * ปรับเพิ่ม/ลดได้ผ่าน .env: ALLOW_ORIGINS="http://localhost:5173,https://your-frontend.example"
  */
 const allowedOrigins = (process.env.ALLOW_ORIGINS
   ? process.env.ALLOW_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
   : [
       'http://localhost:5173',
       'http://127.0.0.1:5173',
-      'http://119.59.102.134'
+      'http://119.59.102.134',
     ]
 );
 
@@ -26,15 +26,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// ถ้าอยู่หลัง Nginx/Proxy และใช้คุกกี้ ควรเปิด trust proxy
+// ถ้าอยู่หลัง Nginx/Proxy และมี cookie ให้เปิด trust proxy ได้
 // app.set('trust proxy', 1);
 
 const corsOptions = {
   origin(origin, cb) {
-    if (!origin) return cb(null, true);            // อนุญาตคำขอที่ไม่มี Origin (เช่น curl/health)
+    if (!origin) return cb(null, true); // อนุญาตพวก curl / health-check
     cb(null, allowedOrigins.includes(origin));
   },
-  credentials: true,                               // สำคัญ: รองรับ cookies / auth
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   maxAge: 86400,
@@ -50,10 +50,11 @@ app.use(express.json());
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
 // ===== Routes =====
+app.use('/api/players', require('./routes/player.routes'));
 app.use('/api/teams', require('./routes/team.routes'));
 app.use('/api/matches', require('./routes/match.routes'));
 app.use('/api/tournaments', require('./routes/tournament.routes'));
-app.use('/api/players', require('./routes/player.routes'));
+app.use('/api/standings', require('./routes/standings.routes')); // ✅ เพิ่มบรรทัดนี้
 
 // ===== DB Connect =====
 (async () => {

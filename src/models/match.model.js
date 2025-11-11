@@ -1,28 +1,43 @@
-const mongoose = require('mongoose');
-const Schema = mongoose.Schema;
+const mongoose = require("mongoose");
 
-const gameSchema = new Schema({
-  game: Number, t1: Number, t2: Number
-}, { _id: false });
+const matchSchema = new mongoose.Schema(
+  {
+    tournamentId: { type: String, default: "default" },
 
-const matchSchema = new Schema({
-  tournamentId: { type: String, required: true },
-  round: { type: String, required: true }, // 'Group A', 'R16', 'QF', 'SF', 'Final'
-  scheduledAt: { type: Date },
-  court: { type: String },
-  order: { type: Number },
+    // ประเภทของรอบ
+    roundType: { type: String, enum: ["group", "knockout"], default: "group" },
 
-  team1: { type: Schema.Types.ObjectId, ref: 'Team' },
-  team2: { type: Schema.Types.ObjectId, ref: 'Team' },
+    // ระดับมือ/กลุ่ม/ชื่อรอบ
+    handLevel: { type: String, required: true },
+    group: { type: String },
+    round: { type: String },
 
-  score1: { type: Number, default: 0 },
-  score2: { type: Number, default: 0 },
-  games: [gameSchema],
+    // ลำดับและรหัสแมตช์
+    matchNo: { type: Number },
+    matchId: { type: String, unique: true },
 
-  winner: { type: Schema.Types.ObjectId, ref: 'Team', default: null },
-  status: { type: String, enum: ['pending', 'in-progress', 'finished'], default: 'pending' },
+    // ทีม
+    team1: { type: mongoose.Schema.Types.ObjectId, ref: "Team", default: null },
+    team2: { type: mongoose.Schema.Types.ObjectId, ref: "Team", default: null },
 
-  nextMatchId: { type: Schema.Types.ObjectId, ref: 'Match', default: null }
-}, { timestamps: true });
+    // กติกาและผล
+    gamesToWin: { type: Number, default: 2 },
+    allowDraw: { type: Boolean, default: false },
+    score1: { type: Number, default: 0 },
+    score2: { type: Number, default: 0 },
+    sets: [{ t1: { type: Number, default: 0 }, t2: { type: Number, default: 0 } }],
+    winner: { type: mongoose.Schema.Types.ObjectId, ref: "Team", default: null },
 
-module.exports = mongoose.model('Match', matchSchema);
+    // สถานะ/เวลา/คอร์ท
+    status: { type: String, enum: ["scheduled", "in-progress", "finished"], default: "scheduled" },
+    scheduledAt: { type: Date },
+    startedAt: { type: Date },
+    court: { type: String },
+
+    // สำหรับ knockout
+    nextMatchId: { type: String }
+  },
+  { timestamps: true }
+);
+
+module.exports = mongoose.model("Match", matchSchema);
