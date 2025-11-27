@@ -369,8 +369,19 @@ router.put("/:id/score", async (req, res, next) => {
       else winner = null;
     }
 
+    // 1. บันทึก Sets แบบ Array (โครงสร้างใหม่)
     match.sets = normalizedSets;
     match.markModified("sets");
+
+    // 2. [เพิ่มส่วนนี้] Sync กลับไปใส่ Legacy Fields เพื่อให้ดูใน DB ง่ายขึ้น
+    // และรองรับโค้ดเก่าที่อาจจะดึง set1Score1 โดยตรง
+    match.set1Score1 = normalizedSets[0]?.t1 || 0;
+    match.set1Score2 = normalizedSets[0]?.t2 || 0;
+    match.set2Score1 = normalizedSets[1]?.t1 || 0;
+    match.set2Score2 = normalizedSets[1]?.t2 || 0;
+    match.set3Score1 = normalizedSets[2]?.t1 || 0;
+    match.set3Score2 = normalizedSets[2]?.t2 || 0;
+
     match.score1 = score1;
     match.score2 = score2;
     match.winner = winner;
@@ -383,7 +394,6 @@ router.put("/:id/score", async (req, res, next) => {
     await revertTeamStats(previousMatch);
     await applyTeamStats(savedMatch);
 
-    // ✅ เพิ่ม Logic Auto Advance (ดันผู้ชนะไปรอบถัดไป)
     if (savedMatch.roundType === "knockout" && savedMatch.status === "finished") {
       await knockoutService.advanceKnockoutWinner(savedMatch);
     }
