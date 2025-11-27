@@ -209,41 +209,25 @@ router.post('/generate-knockout/auto', async (req, res, next) => {
 
 // ----------------- STANDINGS / OVERVIEW -----------------
 
-router.get('/standings', async (req, res, next) => {
+router.get("/standings", async (req, res, next) => {
   try {
-    const { handLevel } = req.query;
-    const level = handLevel ? String(handLevel).toUpperCase() : undefined;
+    const { handLevel, tournamentId } = req.query;
 
-    const teams = await Team.find(level ? { handLevel: level } : {}).populate('players').lean();
-
-    const byLevel = {};
-    for (const t of teams) {
-      const L = t.handLevel || 'UNKNOWN';
-      if (!byLevel[L]) byLevel[L] = {};
-      if (!t.group) continue;
-      if (!byLevel[L][t.group]) byLevel[L][t.group] = [];
-      byLevel[L][t.group].push(t);
+    if (!handLevel) {
+      return res
+        .status(400)
+        .json({ message: "handLevel query param is required" });
     }
 
-    const result = Object.entries(byLevel)
-      .map(([levelName, groups]) => {
-        const items = Object.entries(groups)
-          .map(([groupName, ts]) => {
-            ts.sort((a, b) =>
-              (b.points ?? 0) - (a.points ?? 0) ||
-              (b.scoreDiff ?? 0) - (a.scoreDiff ?? 0) ||
-              (b.wins ?? 0) - (a.wins ?? 0) ||
-              (b.scoreFor ?? 0) - (a.scoreFor ?? 0)
-            );
-            return { groupName, teams: ts };
-          })
-          .sort((a, b) => a.groupName.localeCompare(b.groupName));
-        return { level: levelName, groups: items };
-      })
-      .sort((a, b) => a.level.localeCompare(b.level));
+    const data = await TournamentService.getStandings(
+      handLevel,
+      tournamentId || null
+    );
 
-    return res.json(result);
-  } catch (err) { next(err); }
+    res.json(data);
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.get('/overview', async (_req, res, next) => {

@@ -1,285 +1,394 @@
-// backend/routes/match.routes.js
-const router = require('express').Router();
-const Match = require('../models/match.model');
-const Team = require('../models/team.model');
-const mongoose = require('mongoose');
+// routes/match.routes.js
 
-// --- Point system ---
-const POINTS_WIN = 2; 
-const POINTS_DRAW = 1; 
-const POINTS_LOSS_OR_RETIRE = 1; 
+const express = require("express");
+const router = express.Router();
 
-// -------- helpers: standings update (ปรับปรุงให้รองรับผลเสมอ) --------
+const Match = require("../models/match.model");
+const Team = require("../models/team.model");
+const { calculateSetsAndScores } = require("../utils/scoreUtils");
+// ✅ Import Service
+const knockoutService = require("../services/knockout.service"); 
+const tournamentService = require("../services/tournament.service");
+
+const POINTS_WIN = 3;
+const POINTS_DRAW = 1;
+const POINTS_LOSS_OR_RETIRE = 0;
+
+// Helper: ตรวจสอบ Tournament ID
+function ensureTeamTournamentId(teamDoc, fallbackTournamentId = "default") {
+  if (!teamDoc) return;
+  if (!teamDoc.tournamentId) {
+    teamDoc.tournamentId = fallbackTournamentId;
+  } else {
+    teamDoc.tournamentId = String(teamDoc.tournamentId);
+  }
+}
+
+// Helper: คำนวณ Points ใหม่
+function recomputePoints(teamDoc) {
+  if (!teamDoc) return;
+  const wins = Number(teamDoc.wins || 0);
+  const draws = Number(teamDoc.draws || 0);
+  const losses = Number(teamDoc.losses || 0);
+
+  teamDoc.points =
+    wins * POINTS_WIN +
+    draws * POINTS_DRAW +
+    losses * POINTS_LOSS_OR_RETIRE;
+}
+
+// ------------------------------------------------------------------
+// 1. REVERT (ถอยค่าเดิมออก)
+// ------------------------------------------------------------------
 async function revertTeamStats(oldMatch) {
-  // (โค้ดส่วนนี้เหมือนเดิม... ไม่ต้องแก้ไข)
-  if (!oldMatch || oldMatch.status !== 'finished' || oldMatch.roundType !== 'group') return;
-  const [t1, t2] = await Promise.all([
+  if (!oldMatch) return;
+  if (oldMatch.status !== "finished") return;
+  if (!oldMatch.team1 || !oldMatch.team2) return;
+
+  const [team1, team2] = await Promise.all([
     Team.findById(oldMatch.team1),
     Team.findById(oldMatch.team2),
   ]);
-  if (!t1 || !t2) return;
-  t1.matchesPlayed = (t1.matchesPlayed || 0) - 1;
-  t2.matchesPlayed = (t2.matchesPlayed || 0) - 1;
-  t1.scoreFor = (t1.scoreFor || 0) - (oldMatch.score1 || 0);
-  t1.scoreAgainst = (t1.scoreAgainst || 0) - (oldMatch.score2 || 0);
-  t2.scoreFor = (t2.scoreFor || 0) - (oldMatch.score2 || 0);
-  t2.scoreAgainst = (t2.scoreAgainst || 0) - (oldMatch.score1 || 0);
-  if (String(oldMatch.winner) === String(t1._id)) {
-    t1.wins = (t1.wins || 0) - 1;
-    t2.losses = (t2.losses || 0) - 1;
-    t1.points = (t1.points || 0) - POINTS_WIN;
-    t2.points = (t2.points || 0) - POINTS_LOSS_OR_RETIRE;
-  } else if (String(oldMatch.winner) === String(t2._id)) {
-    t2.wins = (t2.wins || 0) - 1;
-    t1.losses = (t1.losses || 0) - 1;
-    t2.points = (t2.points || 0) - POINTS_WIN;
-    t1.points = (t1.points || 0) - POINTS_LOSS_OR_RETIRE;
-  } else if (!oldMatch.winner) {
-    t1.draws = (t1.draws || 0) - 1;
-    t2.draws = (t2.draws || 0) - 1;
-    t1.points = (t1.points || 0) - POINTS_DRAW;
-    t2.points = (t2.points || 0) - POINTS_DRAW;
+
+  if (!team1 || !team2) return;
+  ensureTeamTournamentId(team1);
+  ensureTeamTournamentId(team2);
+
+  const res = calculateSetsAndScores(oldMatch.sets || []);
+  const score1 = res.score1 || 0;
+  const score2 = res.score2 || 0;
+  const setsWon1 = res.setsWon1 || 0;
+  const setsWon2 = res.setsWon2 || 0;
+
+  team1.matchesPlayed = Math.max(0, (team1.matchesPlayed || 0) - 1);
+  team2.matchesPlayed = Math.max(0, (team2.matchesPlayed || 0) - 1);
+
+  team1.scoreFor = (team1.scoreFor || 0) - score1;
+  team1.scoreAgainst = (team1.scoreAgainst || 0) - score2;
+  team2.scoreFor = (team2.scoreFor || 0) - score2;
+  team2.scoreAgainst = (team2.scoreAgainst || 0) - score1;
+
+  team1.setsFor = (team1.setsFor || 0) - setsWon1;
+  team1.setsAgainst = (team1.setsAgainst || 0) - setsWon2;
+  team2.setsFor = (team2.setsFor || 0) - setsWon2;
+  team2.setsAgainst = (team2.setsAgainst || 0) - setsWon1;
+
+  if (oldMatch.winner) {
+    if (String(oldMatch.winner) === String(oldMatch.team1)) {
+      team1.wins = Math.max(0, (team1.wins || 0) - 1);
+      team2.losses = Math.max(0, (team2.losses || 0) - 1);
+    } else if (String(oldMatch.winner) === String(oldMatch.team2)) {
+      team2.wins = Math.max(0, (team2.wins || 0) - 1);
+      team1.losses = Math.max(0, (team1.losses || 0) - 1);
+    }
+  } else {
+    team1.draws = Math.max(0, (team1.draws || 0) - 1);
+    team2.draws = Math.max(0, (team2.draws || 0) - 1);
   }
-  t1.scoreDiff = (t1.scoreFor || 0) - (t1.scoreAgainst || 0);
-  t2.scoreDiff = (t2.scoreFor || 0) - (t2.scoreAgainst || 0);
-  await Promise.all([t1.save(), t2.save()]);
+
+  if (team1.matchScores && team1.matchScores.length > 0) team1.matchScores.pop();
+  if (team2.matchScores && team2.matchScores.length > 0) team2.matchScores.pop();
+
+  team1.scoreDiff = (team1.scoreFor || 0) - (team1.scoreAgainst || 0);
+  team2.scoreDiff = (team2.scoreFor || 0) - (team2.scoreAgainst || 0);
+  team1.setsDiff = (team1.setsFor || 0) - (team1.setsAgainst || 0);
+  team2.setsDiff = (team2.setsFor || 0) - (team2.setsAgainst || 0);
+  recomputePoints(team1);
+  recomputePoints(team2);
+
+  await Promise.all([team1.save(), team2.save()]);
 }
 
+// ------------------------------------------------------------------
+// 2. APPLY (ใส่ค่าใหม่เข้าไป)
+// ------------------------------------------------------------------
 async function applyTeamStats(newMatch) {
-  // (โค้ดส่วนนี้เหมือนเดิม... ไม่ต้องแก้ไข)
-  if (!newMatch || newMatch.status !== 'finished' || newMatch.roundType !== 'group') return;
-  const [t1, t2] = await Promise.all([
+  if (!newMatch) return;
+  if (newMatch.status !== "finished") return;
+  if (!newMatch.team1 || !newMatch.team2) return;
+
+  const [team1, team2] = await Promise.all([
     Team.findById(newMatch.team1),
     Team.findById(newMatch.team2),
   ]);
-  if (!t1 || !t2) return;
-  t1.matchesPlayed = (t1.matchesPlayed || 0) + 1;
-  t2.matchesPlayed = (t2.matchesPlayed || 0) + 1;
-  t1.scoreFor = (t1.scoreFor || 0) + (newMatch.score1 || 0);
-  t1.scoreAgainst = (t1.scoreAgainst || 0) + (newMatch.score2 || 0);
-  t2.scoreFor = (t2.scoreFor || 0) + (newMatch.score2 || 0);
-  t2.scoreAgainst = (t2.scoreAgainst || 0) + (newMatch.score1 || 0);
-  if (!t1.wins) t1.wins = 0;
-  if (!t1.losses) t1.losses = 0;
-  if (!t1.draws) t1.draws = 0;
-  if (!t1.points) t1.points = 0;
-  if (!t2.wins) t2.wins = 0;
-  if (!t2.losses) t2.losses = 0;
-  if (!t2.draws) t2.draws = 0;
-  if (!t2.points) t2.points = 0;
-  if (String(newMatch.winner) === String(t1._id)) {
-    t1.wins += 1;
-    t2.losses += 1;
-    t1.points += POINTS_WIN;
-    t2.points += POINTS_LOSS_OR_RETIRE;
-  } else if (String(newMatch.winner) === String(t2._id)) {
-    t2.wins += 1;
-    t1.losses += 1;
-    t2.points += POINTS_WIN;
-    t1.points += POINTS_LOSS_OR_RETIRE;
-  } else if (!newMatch.winner) {
-    t1.draws += 1;
-    t2.draws += 1;
-    t1.points += POINTS_DRAW;
-    t2.points += POINTS_DRAW;
+
+  if (!team1 || !team2) return;
+  ensureTeamTournamentId(team1);
+  ensureTeamTournamentId(team2);
+
+  const res = calculateSetsAndScores(newMatch.sets || []);
+  const score1 = res.score1 || 0;
+  const score2 = res.score2 || 0;
+  const setsWon1 = res.setsWon1 || 0;
+  const setsWon2 = res.setsWon2 || 0;
+
+  team1.matchesPlayed = (team1.matchesPlayed || 0) + 1;
+  team2.matchesPlayed = (team2.matchesPlayed || 0) + 1;
+
+  team1.scoreFor = (team1.scoreFor || 0) + score1;
+  team1.scoreAgainst = (team1.scoreAgainst || 0) + score2;
+  team2.scoreFor = (team2.scoreFor || 0) + score2;
+  team2.scoreAgainst = (team2.scoreAgainst || 0) + score1;
+
+  team1.setsFor = (team1.setsFor || 0) + setsWon1;
+  team1.setsAgainst = (team1.setsAgainst || 0) + setsWon2;
+  team2.setsFor = (team2.setsFor || 0) + setsWon2;
+  team2.setsAgainst = (team2.setsAgainst || 0) + setsWon1;
+
+  if (newMatch.winner) {
+    if (String(newMatch.winner) === String(newMatch.team1)) {
+      team1.wins = (team1.wins || 0) + 1;
+      team2.losses = (team2.losses || 0) + 1;
+    } else if (String(newMatch.winner) === String(newMatch.team2)) {
+      team2.wins = (team2.wins || 0) + 1;
+      team1.losses = (team1.losses || 0) + 1;
+    }
+  } else {
+    team1.draws = (team1.draws || 0) + 1;
+    team2.draws = (team2.draws || 0) + 1;
   }
-  t1.scoreDiff = (t1.scoreFor || 0) - (t1.scoreAgainst || 0);
-  t2.scoreDiff = (t2.scoreFor || 0) - (t2.scoreAgainst || 0);
-  await Promise.all([t1.save(), t2.save()]);
+
+  if (!team1.matchScores) team1.matchScores = [];
+  if (!team2.matchScores) team2.matchScores = [];
+  
+  team1.matchScores.push(`${setsWon1}-${setsWon2}`);
+  team2.matchScores.push(`${setsWon2}-${setsWon1}`);
+
+  team1.scoreDiff = (team1.scoreFor || 0) - (team1.scoreAgainst || 0);
+  team2.scoreDiff = (team2.scoreFor || 0) - (team2.scoreAgainst || 0);
+  team1.setsDiff = (team1.setsFor || 0) - (team1.setsAgainst || 0);
+  team2.setsDiff = (team2.setsFor || 0) - (team2.setsAgainst || 0);
+  recomputePoints(team1);
+  recomputePoints(team2);
+
+  await Promise.all([team1.save(), team2.save()]);
 }
 
-// -------- 1) GET /api/matches (NEW: List/Filter/Page) --------
-router.get('/', async (req, res, next) => {
-  // (โค้ดส่วนนี้เหมือนเดิม... ไม่ต้องแก้ไข)
+// ------------------------------------------------------------------
+// Routes
+// ------------------------------------------------------------------
+
+router.get("/", async (req, res, next) => {
   try {
-    const {
-      page = 1,
-      pageSize = 20,
-      day,
-      handLevel,
-      group,
-      court,
-      status,
-      q, 
-      sort = 'matchNo', 
-      tournamentId,
-    } = req.query;
-
-    const query = {};
-    const pageNum = parseInt(page, 10) || 1;
-    const size = parseInt(pageSize, 10) || 20;
-    const skip = (pageNum - 1) * size;
-
-    if (tournamentId) query.tournamentId = tournamentId;
-    if (day) query.day = day;
-    if (handLevel) query.handLevel = handLevel;
-    if (group) query.group = group;
-    if (court) query.court = court;
-    if (status) query.status = status;
-
-    const sortOrder = {};
-    if (sort) {
-      const dir = sort.startsWith('-') ? -1 : 1;
-      const field = sort.replace(/^-/, '');
-      sortOrder[field] = dir;
-    } else {
-      sortOrder.matchNo = 1; 
+    const { tournamentId, handLevel, group, roundType, round, status, q, sort, page, pageSize } = req.query;
+    const filter = {};
+    if (tournamentId) filter.tournamentId = tournamentId;
+    if (handLevel) filter.handLevel = handLevel;
+    if (group) filter.group = group;
+    if (roundType) filter.roundType = roundType;
+    if (round) filter.round = round;
+    if (status) {
+       const s = status.split(",").map(x=>x.trim()).filter(Boolean);
+       filter.status = s.length > 1 ? {$in: s} : s[0];
     }
-    if (!sortOrder.createdAt && !sortOrder._id) sortOrder.createdAt = 1;
-
-    const [items, total] = await Promise.all([
-      Match.find(query)
-        .populate(['team1', 'team2', 'winner'])
-        .sort(sortOrder)
-        .skip(skip)
-        .limit(size)
-        .lean(),
-      Match.countDocuments(query)
-    ]);
-
-    res.json({
-      items,
-      total,
-      page: pageNum,
-      pageSize: size,
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// -------- 2) PATCH /api/matches/reorder (FIXED: Master List Logic) --------
-router.patch('/reorder', async function (req, res, next) {
-  // (โค้ดส่วนนี้เหมือนเดิม... ไม่ต้องแก้ไข)
-  try {
-    const { orderedIds } = req.body;
+    if (q) {
+       const rg = new RegExp(String(q).trim(), "i");
+       filter.$or = [{ matchId: rg }, { handLevel: rg }, { group: rg }, { round: rg }, { court: rg }];
+    }
+    const p = Math.max(1, parseInt(page)||1);
+    const ps = Math.min(5000, Math.max(1, parseInt(pageSize)||50));
+    const skip = (p-1)*ps;
     
-    if (!Array.isArray(orderedIds)) {
-      return res.status(400).json({ message: 'Missing required fields: orderedIds' });
+    const sOpt = {};
+    if (sort) {
+       String(sort).split(",").forEach(f => {
+         let k = f.trim();
+         let d = 1;
+         if (k.startsWith("-")) { d = -1; k = k.slice(1); }
+         if (k) sOpt[k] = d;
+       });
+    }
+    if (!Object.keys(sOpt).length) sOpt.matchNo = 1;
+
+    const [total, items] = await Promise.all([
+       Match.countDocuments(filter),
+       Match.find(filter).populate("team1").populate("team2").sort(sOpt).skip(skip).limit(ps)
+    ]);
+    res.json({ items, total, page: p, pageSize: ps });
+  } catch(e) { next(e); }
+});
+
+router.get("/:id", async (req, res, next) => {
+  try {
+    const m = await Match.findById(req.params.id).populate("team1").populate("team2");
+    if(!m) return res.status(404).json({message:"Not found"});
+    res.json(m);
+  } catch(e) { next(e); }
+});
+
+router.post("/generate-knockout-auto", async (req, res, next) => {
+  try {
+    const { handLevel, round } = req.body;
+    
+    if (!handLevel || !round) {
+      return res.status(400).json({ message: "Missing handLevel or round" });
     }
 
-    const operations = orderedIds.map((id, index) => ({
-      updateOne: {
-        filter: {
-          _id: new mongoose.Types.ObjectId(id),
-        },
-        update: {
-          $set: { matchNo: index + 1 } 
-        }
-      }
-    }));
+    const result = await knockoutService.autoGenerateKnockoutFromStandings({
+      handLevel,
+      roundCode: round,
+    });
 
-    if (operations.length === 0) {
-      return res.json({ updated: 0 });
-    }
-
-    const result = await Match.bulkWrite(operations);
-
-    res.json({ updated: result.modifiedCount });
-  } catch (err) {
-    next(err);
+    res.json(result);
+  } catch (e) {
+    next(e);
   }
 });
 
-// ============ [!! START: ส่วนที่แก้ไข !!] ============
-
-// -------- 3) PUT /api/matches/:id/schedule (FIXED) --------
-router.put('/:id/schedule', async (req, res, next) => {
+router.post("/mock-scores", async (req, res, next) => {
   try {
-    // แก้ไข 1: รับ status และ startedAt เพิ่ม
-    const { day, scheduledAt, court, matchNo, status, startedAt } = req.body;
-    const match = await Match.findById(req.params.id);
-    if (!match) return res.status(404).json({ message: 'Match not found' });
+    const { handLevel } = req.body;
+    if (!handLevel) return res.status(400).json({ message: "Missing handLevel" });
 
-    const update = {};
-    if (day !== undefined) update.day = day;
-    if (scheduledAt !== undefined) update.scheduledAt = scheduledAt;
-    if (court !== undefined) update.court = court;
-    if (matchNo !== undefined) update.matchNo = matchNo;
-    if (status !== undefined) update.status = status;         // <-- แก้ไข 2: เพิ่ม status
-    if (startedAt !== undefined) update.startedAt = startedAt; // <-- แก้ไข 3: เพิ่ม startedAt
+    const matches = await Match.find({
+      handLevel,
+      roundType: "group",
+      status: "scheduled"
+    });
 
-    const updatedMatch = await Match.findByIdAndUpdate(
-      req.params.id,
-      { $set: update },
-      { new: true } 
-    ).populate(['team1', 'team2', 'winner']);
+    if (matches.length === 0) {
+      return res.json({ message: "ไม่พบแมตช์ที่ต้อง Mock (อาจจะแข่งจบหมดแล้ว)" });
+    }
 
-    res.json(updatedMatch);
-  } catch (err) {
-    next(err);
+    let count = 0;
+    for (const m of matches) {
+      const winnerIdx = Math.random() > 0.5 ? 1 : 2;
+      const isThreeSets = Math.random() > 0.7; 
+      
+      let sets = [];
+      if (winnerIdx === 1) { 
+         if(isThreeSets) sets = [{t1:21,t2:18}, {t1:19,t2:21}, {t1:21,t2:15}];
+         else sets = [{t1:21,t2:15}, {t1:21,t2:12}];
+      } else { 
+         if(isThreeSets) sets = [{t1:18,t2:21}, {t1:21,t2:19}, {t1:15,t2:21}]; 
+         else sets = [{t1:10,t2:21}, {t1:15,t2:21}];
+      }
+
+      const calc = calculateSetsAndScores(sets);
+      
+      m.sets = calc.normalizedSets;
+      m.score1 = calc.score1;
+      m.score2 = calc.score2;
+      m.status = "finished";
+      m.gamesToWin = 2;
+      m.allowDraw = false;
+
+      if (calc.setsWon1 > calc.setsWon2) m.winner = m.team1;
+      else if (calc.setsWon2 > calc.setsWon1) m.winner = m.team2;
+      else m.winner = null;
+
+      const savedMatch = await m.save();
+      await applyTeamStats(savedMatch);
+      count++;
+    }
+
+    res.json({ 
+      success: true, 
+      message: `Mock คะแนนเรียบร้อยจำนวน ${count} แมตช์`,
+      handLevel 
+    });
+
+  } catch (e) {
+    next(e);
   }
 });
-// ============ [!! END: ส่วนที่แก้ไข !!] ============
 
-// -------- 4) PUT /api/matches/:id/score (NEW) --------
-router.put('/:id/score', async (req, res, next) => {
-  // (โค้ดส่วนนี้เหมือนเดิม... ไม่ต้องแก้ไข)
+router.post("/", async (req, res, next) => {
   try {
-    const { sets, status } = req.body;
-    if (!Array.isArray(sets) || !status) {
-      return res.status(400).json({ message: 'Missing required fields: sets, status' });
-    }
+     const m = new Match(req.body);
+     res.status(201).json(await m.save());
+  } catch(e) { next(e); }
+});
 
+router.put("/:id", async (req, res, next) => {
+  try {
+    const u = await Match.findByIdAndUpdate(req.params.id, req.body, {new:true});
+    if(!u) return res.status(404).json({message:"Not found"});
+    res.json(u);
+  } catch(e) { next(e); }
+});
+
+router.put("/:id/schedule", async (req, res, next) => {
+  try {
+    const keys = ["scheduledAt","startedAt","startTime","estimatedStartTime","court","courtNo","status","matchNo","day"];
+    const up = {};
+    keys.forEach(k => { if(req.body[k]!==undefined) up[k] = req.body[k]; });
+    const u = await Match.findByIdAndUpdate(req.params.id, {$set:up}, {new:true, runValidators:true});
+    if(!u) return res.status(404).json({message:"Not found"});
+    res.json(u);
+  } catch(e) { next(e); }
+});
+
+router.patch("/reorder", async (req, res, next) => {
+  try {
+    const { orderedIds } = req.body || {};
+    if(!Array.isArray(orderedIds)) return res.status(400).json({message:"Required array"});
+    const ops = orderedIds.map((id,i) => ({ updateOne: { filter: {_id:id}, update: {$set:{matchNo:i+1}} } }));
+    const r = await Match.bulkWrite(ops);
+    res.json({ updated: r.modifiedCount });
+  } catch(e) { next(e); }
+});
+
+router.delete("/:id", async (req, res, next) => {
+  try {
+    const m = await Match.findByIdAndDelete(req.params.id);
+    if(!m) return res.status(404).json({message:"Not found"});
+    res.json({message:"Deleted"});
+  } catch(e) { next(e); }
+});
+
+// ------------------------------------------------------
+// UPDATE SCORE (บันทึกคะแนน และ Auto Advance)
+// ------------------------------------------------------
+router.put("/:id/score", async (req, res, next) => {
+  try {
     const match = await Match.findById(req.params.id);
-    if (!match) return res.status(404).json({ message: 'Match not found' });
+    if (!match) return res.status(404).json({ message: "Match not found" });
 
-    if (match.status === 'finished' && match.roundType === 'group') {
-      await revertTeamStats(match);
-    }
+    const previousMatch = match.toObject();
+    const { sets: rawSets, gamesToWin: gw, allowDraw: ad, status: st } = req.body || {};
 
-    let setsWon1 = 0;
-    let setsWon2 = 0;
-    let totalGames1 = 0;
-    let totalGames2 = 0;
+    const calc = calculateSetsAndScores(rawSets || match.sets || []);
+    const normalizedSets = calc.normalizedSets || []; 
+    const { score1, score2, setsWon1, setsWon2 } = calc;
 
-    const validSets = sets.map(s => ({
-      t1: parseInt(s.t1, 10) || 0,
-      t2: parseInt(s.t2, 10) || 0,
-    }));
+    const gamesToWin = Number(gw || match.gamesToWin || 2);
+    const allowDraw = typeof ad === "boolean" ? ad : match.allowDraw;
+    const roundType = match.roundType || "group";
 
-    for (const s of validSets) {
-      totalGames1 += s.t1;
-      totalGames2 += s.t2;
-      if (s.t1 > s.t2) setsWon1++;
-      if (s.t2 > s.t1) setsWon2++;
-    }
-
-    let newWinner = null;
-    if (status === 'finished') {
-      if (match.roundType === 'knockout' || !match.allowDraw) {
-        if (setsWon1 >= match.gamesToWin) newWinner = match.team1;
-        else if (setsWon2 >= match.gamesToWin) newWinner = match.team2;
-      } else {
-        if (setsWon1 > setsWon2) newWinner = match.team1;
-        else if (setsWon2 > setsWon1) newWinner = match.team2;
+    let winner = null;
+    if (roundType === "knockout" || !allowDraw) {
+      if (setsWon1 >= gamesToWin || setsWon2 >= gamesToWin) {
+        winner = setsWon1 > setsWon2 ? match.team1 : match.team2;
+      } else if (!allowDraw && setsWon1 !== setsWon2) {
+         winner = setsWon1 > setsWon2 ? match.team1 : match.team2;
       }
+    } else {
+      if (setsWon1 > setsWon2) winner = match.team1;
+      else if (setsWon2 > setsWon1) winner = match.team2;
+      else winner = null;
     }
 
-    match.sets = validSets;
-    match.score1 = totalGames1; 
-    match.score2 = totalGames2; 
-    match.status = status;
-    match.winner = newWinner;
+    match.sets = normalizedSets;
+    match.markModified("sets");
+    match.score1 = score1;
+    match.score2 = score2;
+    match.winner = winner;
+    match.gamesToWin = gamesToWin;
+    match.allowDraw = allowDraw;
+    match.status = st || "finished";
 
-    await match.save();
+    const savedMatch = await match.save();
 
-    if (match.status === 'finished' && match.roundType === 'group') {
-      await applyTeamStats(match);
+    await revertTeamStats(previousMatch);
+    await applyTeamStats(savedMatch);
+
+    // ✅ เพิ่ม Logic Auto Advance (ดันผู้ชนะไปรอบถัดไป)
+    if (savedMatch.roundType === "knockout" && savedMatch.status === "finished") {
+      await knockoutService.advanceKnockoutWinner(savedMatch);
     }
 
-    if (match.status === 'finished' && match.roundType === 'knockout' && match.nextMatchId && match.winner) {
-      const next = await Match.findById(match.nextMatchId);
-      if (next) {
-        if (!next.team1) next.team1 = match.winner;
-        else if (!next.team2) next.team2 = match.winner;
-        await next.save();
-      }
-    }
-
-    const populated = await Match.findById(match._id).populate(['team1', 'team2', 'winner']);
-    res.json(populated);
-
+    res.json(savedMatch);
   } catch (err) {
     next(err);
   }

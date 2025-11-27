@@ -28,6 +28,24 @@ router.get("/", async (req, res) => {
   }
 });
 
+router.put("/update-ranks", async (req, res) => {
+  try {
+    // รับ body เป็น array: [{ teamId: "...", manualRank: 1 }, ...]
+    const { updates } = req.body; 
+    
+    if (!Array.isArray(updates)) return res.status(400).json({ message: "Invalid data" });
+
+    const promises = updates.map(u => 
+      Team.findByIdAndUpdate(u.teamId, { manualRank: Number(u.manualRank) || 0 })
+    );
+
+    await Promise.all(promises);
+    res.json({ message: "Updated ranks successfully" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
 // GET /:id (Get Team by ID)
 router.get("/:id", async (req, res) => {
   try {

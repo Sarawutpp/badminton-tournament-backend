@@ -1,32 +1,63 @@
-// services/tournament.service.js  (เวอร์ชันปรับปรุง)
+// services/tournament.service.js
+
 const mongoose = require("mongoose");
 const Team = require("../models/team.model");
 const Match = require("../models/match.model");
+const { calculateSetsAndScores } = require("../utils/scoreUtils");
 
-// ---------- helpers ----------
+// ✅ Import Knockout Service
+const knockoutService = require("./knockout.service");
+
+// ----------------------------------------------------------------------
+// CONSTANTS & HELPERS
+// ----------------------------------------------------------------------
+
+const POINTS_WIN = 3;
+const POINTS_DRAW = 1;
+const POINTS_LOSS = 0;
+
 function pad(n, size = 2) { return String(n).padStart(size, "0"); }
 function upper(s = "") { return String(s || "").toUpperCase(); }
 function oid(x) { return typeof x === "string" ? new mongoose.Types.ObjectId(x) : x; }
+
 function normLetter(s = "") {
   const m = String(s).match(/Group\s+([A-Z])/i);
   return (m ? m[1] : String(s).slice(-1)).toUpperCase();
 }
 
-// เดิม: HAND-GROUP-Mxxx  (ไม่มีรอบ)
-// ใหม่: รองรับทั้ง Group และ Knockout
+// ID Generator สำหรับ Group Stage
 function createGroupMatchId(handLevel, groupLetter, roundNo, masterOrder, padDigits = 2) {
   return `${upper(handLevel)}-${upper(groupLetter)}-R${roundNo}-M${pad(masterOrder, padDigits)}`;
 }
-function createKoMatchId(handLevel, koCode, masterOrder, padDigits = 2) {
-  return `${upper(handLevel)}-${upper(koCode)}-M${pad(masterOrder, padDigits)}`;
+
+// Helper: เปรียบเทียบผลงานทีม (ใช้ใน getStandings)
+function comparePerformance(a, b) {
+  // 1. ✅ เช็ค Manual Rank ก่อน (ถ้าแอดมินกำหนดมา)
+  // ค่า 0 ถือว่าไม่มี manual rank ให้ไปเป็นลำดับท้ายๆ (999)
+  const rankA = (a.manualRank && a.manualRank > 0) ? a.manualRank : 999;
+  const rankB = (b.manualRank && b.manualRank > 0) ? b.manualRank : 999;
+
+  // ถ้ามีคนใดคนหนึ่งถูก Force Rank ให้เรียงตามนั้นเลย (น้อยไปมาก: 1 มาก่อน 2)
+  if (rankA !== rankB) {
+      return rankA - rankB;
+  }
+
+  // 2. ถ้าไม่มี Manual Rank (หรือเท่ากัน) ให้ใช้เกณฑ์เดิม
+  if (b.points !== a.points) return b.points - a.points;
+  if (b.setsDiff !== a.setsDiff) return b.setsDiff - a.setsDiff;
+  if (b.scoreDiff !== a.scoreDiff) return b.scoreDiff - a.scoreDiff;
+  if (b.scoreFor !== a.scoreFor) return b.scoreFor - a.scoreFor;
+  
+  // 3. ถ้าเท่ากันหมดจริงๆ ให้เทียบชื่อ (เพื่อให้ผลนิ่ง)
+  return a.teamName.localeCompare(b.teamName);
 }
 
-/** จัดรอบแบบ Round-Robin เป็น “รอบ” (R1, R2, ...) คืนค่า [{roundNo, pairs:[{t1,t2},...]}, ...] */
+// Helper: สร้างตารางพบกันหมด (Round Robin)
 function buildRoundRobinRounds(teamIds = []) {
   const ids = teamIds.map(oid).slice();
   if (ids.length < 2) return [];
   const even = ids.length % 2 === 0;
-  if (!even) ids.push(null); // ใส่ BYE ถ้าจำนวนทีมเป็นคี่
+  if (!even) ids.push(null); 
 
   const n = ids.length;
   const rounds = n - 1;
@@ -46,7 +77,6 @@ function buildRoundRobinRounds(teamIds = []) {
   const out = [];
   for (let r = 1; r <= rounds; r++) {
     out.push({ roundNo: r, pairs: makePairsFromArr(arr) });
-    // หมุนแบบ circle method (ล็อกตำแหน่งตัวแรกไว้)
     const fixed = arr[0];
     const rotated = [fixed, ...arr.slice(2), arr[1]];
     arr = rotated;
@@ -54,15 +84,10 @@ function buildRoundRobinRounds(teamIds = []) {
   return out;
 }
 
-/**
- * ยอมรับ groups ได้หลายทรง แล้วแปลงเป็นมาตรฐาน:
- *   [{ letter:'A', teamIds:[ObjectId,...] }, ...]
- */
+// Normalize Groups Payload
 async function normalizeGroupsPayload(body) {
   const { handLevel } = body || {};
   let groups = body?.groups;
-
-  // object map { "A":[ids], "B":[ids] }
   if (groups && !Array.isArray(groups) && typeof groups === "object") {
     const out = [];
     for (const [k, arr] of Object.entries(groups)) {
@@ -70,40 +95,17 @@ async function normalizeGroupsPayload(body) {
     }
     return out;
   }
-
-  // array [{letter/teamIds}] หรือ [{name/teams}] หรือ [{group/teams}]
-  if (Array.isArray(groups) && groups.length) {
-    return groups
-      .map((g) => ({
-        letter: normLetter(g.letter || g.name || g.group || ""),
-        teamIds: (g.teamIds || g.teams || []).map((t) => oid(t?._id || t)),
-      }))
-      .filter((g) => g.letter && g.teamIds.length);
-  }
-
-  // fallback: ดึงจาก Team ตาม handLevel
-  if (handLevel) {
-    const teams = await Team.find({ handLevel }).select("_id group").lean();
-    const bucket = {};
-    for (const t of teams) {
-      const L = normLetter(t.group || "");
-      if (!L) continue;
-      if (!bucket[L]) bucket[L] = [];
-      bucket[L].push(t._id);
-    }
-    return Object.entries(bucket).map(([L, ids]) => ({ letter: L, teamIds: ids }));
-  }
-
   return [];
 }
 
-// ---------- services ----------
+// ----------------------------------------------------------------------
+// CORE SERVICES
+// ----------------------------------------------------------------------
 
 /**
- * Manual grouping + generate round-robin matches (เป็นรอบ R1..Rk + Match ID ใหม่)
- * body:
- *  - { handLevel, groups:{ A:[...], B:[...] } } (แนะนำ)
- *  - หรือรูปแบบอื่นที่ normalizeGroupsPayload รองรับ
+ * 1. manualGroupAndGenerate
+ * - สร้าง Group Matches
+ * - ✅ เรียก knockoutService เพื่อสร้าง Skeleton ต่อทันที
  */
 async function manualGroupAndGenerate(body) {
   const {
@@ -116,30 +118,24 @@ async function manualGroupAndGenerate(body) {
   if (!handLevel) throw new Error("handLevel is required");
 
   const normGroups = await normalizeGroupsPayload(body);
-  if (!normGroups.length) {
-    throw new Error("groups is required (non-empty)");
-  }
+  if (!normGroups.length) throw new Error("groups is required (non-empty)");
 
-  // ลบแมตช์เก่าของ level นี้ในรอบแบ่งกลุ่ม
-  await Match.deleteMany({
-    tournamentId,
-    handLevel,
-    roundType: "group",
-  });
+  // 1. ลบแมตช์เก่าทั้งหมดของ HandLevel นี้ (ทั้ง Group และ KO) เพื่อสร้างใหม่ยกชุด
+  await Match.deleteMany({ tournamentId, handLevel });
 
-  // sync group ลง Team
+  // อัปเดต Group ของ Team
   for (const g of normGroups) {
     await Team.updateMany({ _id: { $in: g.teamIds } }, { $set: { group: g.letter } });
   }
 
-  // สร้าง RR แบบเป็น “รอบ”
-  let created = 0;
+  // 2. สร้าง Group Matches
+  let createdGroups = 0;
   let runningOrder = 1;
 
   for (const g of normGroups) {
-    const rounds = buildRoundRobinRounds(g.teamIds); // [{roundNo, pairs:[...]}]
+    const rounds = buildRoundRobinRounds(g.teamIds); 
     for (const R of rounds) {
-      const roundNo = R.roundNo; // 1-based
+      const roundNo = R.roundNo;
       for (const p of R.pairs) {
         const order = runningOrder++;
         const matchId = createGroupMatchId(handLevel, g.letter, roundNo, order, 2);
@@ -149,9 +145,9 @@ async function manualGroupAndGenerate(body) {
           handLevel,
           group: g.letter,
           round: `Group ${g.letter}`,
-          groupRound: roundNo,              // <-- ใส่รอบ R1/R2/R3
-          matchNo: order,                   // <-- Master order ต่อเนื่องทั้งทุกกลุ่ม
-          matchId,                          // <-- ฟอร์แมตใหม่ HAND-G-RX-Mxx
+          groupRound: roundNo,
+          matchNo: order,
+          matchId,
           team1: p.t1,
           team2: p.t2,
           gamesToWin,
@@ -160,123 +156,130 @@ async function manualGroupAndGenerate(body) {
           score2: 0,
           status: "scheduled",
         });
-        created++;
+        createdGroups++;
       }
     }
   }
+
+  // 3. ✅ เรียกใช้ Knockout Service เพื่อสร้าง Skeleton ต่อท้ายทันที
+  // (ส่ง runningOrder ล่าสุดไปให้ เพื่อให้ matchNo เรียงต่อกัน)
+  const createdKnockouts = await knockoutService.generateKnockoutSkeleton(tournamentId, handLevel, runningOrder);
 
   return {
     level: handLevel,
     groups: normGroups.map((g) => ({ letter: g.letter, teamCount: g.teamIds.length })),
-    matches: created,
-    createdMatches: created, // เพื่อให้ Generator.jsx แจ้งจำนวนคู่ได้ถูกต้อง
+    matches: createdGroups,
+    knockoutMatches: createdKnockouts,
+    totalMatches: createdGroups + createdKnockouts
   };
 }
 
-/**
- * สุ่ม RR (ยังคงไว้กรณีใช้งานเดิม) — ปรับ Match ID ให้ใช้ตัวพิมพ์ใหญ่ และเติม groupRound=?
- * หมายเหตุ: ถ้าต้องการฟอร์แมต R1/R2 ที่เป๊ะ แนะนำใช้ manualGroupAndGenerate แทน
- */
-async function generateMatches(handLevel, strategy, teamsPerGroup = 4) {
+// ------------------------------------------------------
+// GET STANDINGS (สำหรับ Group Stage)
+// ------------------------------------------------------
+async function getStandings(handLevel, tournamentId) {
   if (!handLevel) throw new Error("handLevel is required");
+  const query = { handLevel };
+  if (tournamentId) query.tournamentId = tournamentId;
 
-  const teams = await Team.find({ tournamentId: "default", handLevel }).lean();
-  if (!teams || teams.length < 2) {
-    throw new Error(`No teams found for level ${handLevel}. (Found ${teams ? teams.length : 0})`);
+  const teams = await Team.find(query)
+    .populate("players", "fullName nickname")
+    .sort({ group: 1, groupOrder: 1, teamName: 1 })
+    .lean();
+
+  const groupsMap = {};
+  for (const t of teams) {
+    const groupName = t.group || "-";
+    if (!groupsMap[groupName]) groupsMap[groupName] = [];
+
+    groupsMap[groupName].push({
+      teamId: t._id,
+      teamName: t.teamName,
+      group: t.group,
+      handLevel: t.handLevel,
+      players: t.players || [],
+      matchesPlayed: Number(t.matchesPlayed || 0),
+      wins: Number(t.wins || 0),
+      draws: Number(t.draws || 0),
+      losses: Number(t.losses || 0),
+      points: Number(t.points || 0),
+      scoreFor: Number(t.scoreFor || 0),
+      scoreAgainst: Number(t.scoreAgainst || 0),
+      scoreDiff: (Number(t.scoreFor)||0) - (Number(t.scoreAgainst)||0),
+      setsFor: Number(t.setsFor || 0),
+      setsAgainst: Number(t.setsAgainst || 0),
+      setsDiff: (Number(t.setsFor)||0) - (Number(t.setsAgainst)||0),
+      manualRank: t.manualRank || 0,
+    });
   }
 
-  const { deletedCount: deletedMatches } = await Match.deleteMany({
-    tournamentId: "default",
-    handLevel,
-  });
+  const groups = Object.keys(groupsMap).sort().map((groupName) => {
+      const list = groupsMap[groupName];
+      list.sort((a, b) => comparePerformance(a, b));
+      return { groupName, teams: list };
+    });
 
-  let matchesCreated = 0;
-  let groupsCreated = 0;
-
-  if (strategy === "RR") {
-    const shuffledTeams = teams.sort(() => 0.5 - Math.random());
-    const numGroups = Math.ceil(shuffledTeams.length / teamsPerGroup);
-    groupsCreated = numGroups;
-
-    const creates = [];
-    let matchNoCounter = 1;
-
-    for (let i = 0; i < numGroups; i++) {
-      const groupName = String.fromCharCode(65 + i); // A, B, C...
-      const groupTeams = shuffledTeams.slice(i * teamsPerGroup, (i + 1) * teamsPerGroup);
-
-      await Team.updateMany(
-        { _id: { $in: groupTeams.map((t) => t._id) } },
-        { $set: { group: groupName } }
-      );
-
-      // ใช้ round-robin แบบเป็นรอบ
-      const rounds = buildRoundRobinRounds(groupTeams.map((t) => t._id));
-      for (const R of rounds) {
-        for (const p of R.pairs) {
-          const currentMatchNo = matchNoCounter++;
-          const matchId = createGroupMatchId(handLevel, groupName, R.roundNo, currentMatchNo, 2);
-          creates.push(
-            Match.create({
-              tournamentId: "default",
-              roundType: "group",
-              handLevel,
-              group: groupName,
-              round: `Group ${groupName}`,
-              groupRound: R.roundNo,
-              matchNo: currentMatchNo,
-              matchId,
-              team1: p.t1,
-              team2: p.t2,
-              gamesToWin: 2,
-              allowDraw: false,
-              score1: 0,
-              score2: 0,
-              status: "scheduled",
-            })
-          );
-        }
-      }
-    }
-
-    await Promise.all(creates);
-    matchesCreated = creates.length;
-  } else {
-    throw new Error("Unknown strategy");
-  }
-
-  return { handLevel, teamsFound: teams.length, deletedMatches, groupsCreated, matchesCreated };
+  return { handLevel, tournamentId: tournamentId || null, groups };
 }
 
+// ------------------------------------------------------
+// Common Services (List, Search, Update Score)
+// ------------------------------------------------------
+
 async function listAllMatches() {
-  const matches = await Match.find({ tournamentId: "default" })
+  return Match.find({ tournamentId: "default" })
     .populate("team1", "teamName")
     .populate("team2", "teamName")
     .sort({ matchNo: 1 })
     .lean();
-  return matches;
 }
 
-async function listSchedule(
-  page = 1,
-  pageSize = 20,
-  handLevel = "",
-  status = "",
-  q = "",
-  sort = "matchNo"
-) {
+async function listSchedule({ page = 1, pageSize = 20, handLevel = "", status = "", q = "", sort = "matchNo", roundType = "" } = {}) {
   const query = { tournamentId: "default" };
   if (handLevel) query.handLevel = handLevel;
-  if (status) query.status = status;
-  if (q) query.matchId = { $regex: q, $options: "i" };
+  
+  if (roundType) query.roundType = roundType;
+
+  if (status) {
+    const arr = String(status).split(",").map((s) => s.trim()).filter(Boolean);
+    query.status = arr.length > 1 ? { $in: arr } : arr[0];
+  }
+
+  if (q && String(q).trim()) {
+    const text = String(q).trim();
+    const regex = new RegExp(text, "i");
+    // ค้นหา Team ID ก่อน
+    const teamDocs = await Team.find({ teamName: regex }).select("_id").lean();
+    const teamIds = teamDocs.map((t) => t._id);
+    
+    if (teamIds.length) {
+      query.$or = [
+        { matchId: regex }, 
+        { team1: { $in: teamIds } }, 
+        { team2: { $in: teamIds } }
+      ];
+    } else {
+      query.matchId = regex;
+    }
+  }
 
   const skip = (page - 1) * pageSize;
+  const sortObj = {};
+  if (sort) {
+      const parts = sort.split(",");
+      parts.forEach(p => {
+          const [key, dir] = p.split(":");
+          sortObj[key] = dir === "desc" ? -1 : 1;
+      });
+  }
+  if (Object.keys(sortObj).length === 0) sortObj.matchNo = 1;
+
   const [total, items] = await Promise.all([
     Match.countDocuments(query),
     Match.find(query)
       .populate("team1", "teamName players")
       .populate("team2", "teamName players")
-      .sort(sort)
+      .sort(sortObj)
       .skip(skip)
       .limit(pageSize)
       .lean(),
@@ -296,49 +299,7 @@ async function updateSchedule(matchId, patch) {
   return match;
 }
 
-async function updateScore(matchId, scoreData) {
-  const { sets = [], status = "finished" } = scoreData;
-
-  let score1 = 0;
-  let score2 = 0;
-  let setsWon1 = 0;
-  let setsWon2 = 0;
-
-  const normSets = sets.map((s) => ({
-    t1: parseInt(s.t1 || 0, 10),
-    t2: parseInt(s.t2 || 0, 10),
-  }));
-  normSets.forEach((s) => {
-    score1 += s.t1;
-    score2 += s.t2;
-    if (s.t1 > s.t2) setsWon1++;
-    else if (s.t2 > s.t1) setsWon2++;
-  });
-
-  const match = await Match.findById(matchId);
-  if (!match) throw new Error("Match not found");
-
-  let winner = null;
-  if (status === "finished") {
-    if (match.roundType === "knockout" || !match.allowDraw) {
-      if (setsWon1 >= (match.gamesToWin || 2)) winner = match.team1;
-      else if (setsWon2 >= (match.gamesToWin || 2)) winner = match.team2;
-    } else {
-      if (setsWon1 > setsWon2) winner = match.team1;
-      else if (setsWon2 > setsWon1) winner = match.team2;
-    }
-  }
-
-  match.sets = normSets;
-  match.score1 = score1;
-  match.score2 = score2;
-  match.status = status;
-  match.winner = winner;
-  await match.save();
-
-  return await Match.findById(match._id).populate(["team1", "team2", "winner"]);
-}
-
+// Reorder Matches (สลับลำดับแมตช์)
 async function reorderMatches(orderedIds = []) {
   const bulkOps = orderedIds.map((id, index) => ({
     updateOne: { filter: { _id: id }, update: { $set: { matchNo: index + 1 } } },
@@ -348,163 +309,134 @@ async function reorderMatches(orderedIds = []) {
   return { updated: result.modifiedCount || 0 };
 }
 
-async function getStandings(handLevel) {
-  const teams = await Team.find({ tournamentId: "default", handLevel })
-    .sort({ group: 1, teamName: 1 })
-    .lean();
+// ------------------------------------------------------
+// TEAM STATS UPDATE (เรียกใช้เมื่อมีการกรอกคะแนน)
+// ------------------------------------------------------
 
-  const matches = await Match.find({
-    tournamentId: "default",
-    handLevel,
-    status: "finished",
-  }).lean();
-
-  const teamMap = {};
-  teams.forEach((t) => {
-    teamMap[t._id] = {
-      ...t,
-      matchesPlayed: 0,
-      wins: 0,
-      losses: 0,
-      draws: 0,
-      points: 0,
-      scoreFor: 0,
-      scoreAgainst: 0,
-      scoreDiff: 0,
-    };
-  });
-
-  matches.forEach((m) => {
-    const t1 = teamMap[m.team1];
-    const t2 = teamMap[m.team2];
-    if (!t1 || !t2) return;
-
-    const s1 = m.score1 || 0;
-    const s2 = m.score2 || 0;
-
-    t1.matchesPlayed++;
-    t2.matchesPlayed++;
-    t1.scoreFor += s1;
-    t1.scoreAgainst += s2;
-    t2.scoreFor += s2;
-    t2.scoreAgainst += s1;
-
-    if (s1 > s2) {
-      t1.wins++; t1.points += 2;
-      t2.losses++; t2.points += 1;
-    } else if (s2 > s1) {
-      t2.wins++; t2.points += 2;
-      t1.losses++; t1.points += 1;
-    } else {
-      t1.draws++; t2.draws++;
-      t1.points += 1; t2.points += 1;
-    }
-  });
-
-  const groups = {};
-  Object.values(teamMap).forEach((t) => {
-    t.scoreDiff = t.scoreFor - t.scoreAgainst;
-    const g = t.group || "N/A";
-    if (!groups[g]) groups[g] = [];
-    groups[g].push(t);
-  });
-
-  const resultGroups = Object.keys(groups)
-    .sort()
-    .map((groupName) => {
-      const sorted = groups[groupName].sort(
-        (a, b) =>
-          (b.points ?? 0) - (a.points ?? 0) ||
-          (b.scoreDiff ?? 0) - (a.scoreDiff ?? 0) ||
-          (b.wins ?? 0) - (a.wins ?? 0) ||
-          (b.scoreFor ?? 0) - (a.scoreFor ?? 0)
-      );
-      return { groupName, teams: sorted };
-    });
-
-  return { level: handLevel, groups: resultGroups };
+function ensureTeamTournamentId(teamDoc) {
+  if (!teamDoc) return;
+  if (!teamDoc.tournamentId) teamDoc.tournamentId = "default";
 }
 
-/** (แถม) สร้าง Knockout รอบใด ๆ พร้อมรีเซ็ต matchNo เริ่ม 1 ใหม่ และ Match ID แบบ KOcode */
-async function generateKnockout({
-  tournamentId = "default",
-  handLevel,
-  koCode = "KO16",         // เช่น "KO16", "QF", "SF", "F"
-  pairs = [],              // [{t1:ObjectId, t2:ObjectId}, ...] เรียงลำดับมาแล้ว
-  gamesToWin = 2,
-}) {
-  if (!handLevel) throw new Error("handLevel is required");
-  if (!Array.isArray(pairs) || pairs.length === 0) {
-    throw new Error("pairs is required (non-empty)");
+function recomputePoints(teamDoc) {
+  if (!teamDoc) return;
+  const wins = Number(teamDoc.wins || 0);
+  const draws = Number(teamDoc.draws || 0);
+  const losses = Number(teamDoc.losses || 0);
+  teamDoc.points = wins * POINTS_WIN + draws * POINTS_DRAW + losses * POINTS_LOSS;
+}
+
+// Revert Stats (ลบค่าเก่าออก)
+async function revertTeamStats(oldMatch) {
+  if (!oldMatch || oldMatch.status !== "finished" || !oldMatch.team1 || !oldMatch.team2) return;
+
+  const [team1, team2] = await Promise.all([
+    Team.findById(oldMatch.team1),
+    Team.findById(oldMatch.team2),
+  ]);
+  if (!team1 || !team2) return;
+
+  const res = calculateSetsAndScores(oldMatch.sets || []);
+  
+  // Logic Revert... (ลดค่า)
+  team1.matchesPlayed = Math.max(0, (team1.matchesPlayed||0) - 1);
+  team2.matchesPlayed = Math.max(0, (team2.matchesPlayed||0) - 1);
+  
+  team1.scoreFor = (team1.scoreFor||0) - res.score1;
+  team1.scoreAgainst = (team1.scoreAgainst||0) - res.score2;
+  team2.scoreFor = (team2.scoreFor||0) - res.score2;
+  team2.scoreAgainst = (team2.scoreAgainst||0) - res.score1;
+
+  team1.setsFor = (team1.setsFor||0) - res.setsWon1;
+  team1.setsAgainst = (team1.setsAgainst||0) - res.setsWon2;
+  team2.setsFor = (team2.setsFor||0) - res.setsWon2;
+  team2.setsAgainst = (team2.setsAgainst||0) - res.setsWon1;
+
+  if (oldMatch.winner) {
+      if (String(oldMatch.winner) === String(team1._id)) {
+          team1.wins = Math.max(0, (team1.wins||0) - 1);
+          team2.losses = Math.max(0, (team2.losses||0) - 1);
+      } else {
+          team2.wins = Math.max(0, (team2.wins||0) - 1);
+          team1.losses = Math.max(0, (team1.losses||0) - 1);
+      }
+  } else {
+      team1.draws = Math.max(0, (team1.draws||0) - 1);
+      team2.draws = Math.max(0, (team2.draws||0) - 1);
   }
 
-  // ลบ KO เดิมของ koCode นี้ (ถ้าต้องการเฉพาะรอบ ให้ใส่ตัวกรอง round=koCode)
-  await Match.deleteMany({
-    tournamentId,
-    handLevel,
-    roundType: "knockout",
-    round: koCode,
-  });
+  // Re-calc diff & points
+  team1.scoreDiff = (team1.scoreFor||0) - (team1.scoreAgainst||0);
+  team2.scoreDiff = (team2.scoreFor||0) - (team2.scoreAgainst||0);
+  team1.setsDiff = (team1.setsFor||0) - (team1.setsAgainst||0);
+  team2.setsDiff = (team2.setsFor||0) - (team2.setsAgainst||0);
+  recomputePoints(team1);
+  recomputePoints(team2);
 
-  const creates = [];
-  for (let i = 0; i < pairs.length; i++) {
-    const masterOrder = i + 1; // Reset ใหม่
-    const matchId = createKoMatchId(handLevel, koCode, masterOrder, 2);
-    creates.push(
-      Match.create({
-        tournamentId,
-        roundType: "knockout",
-        handLevel,
-        round: koCode,      // เช่น "KO16"
-        matchNo: masterOrder,
-        matchId,
-        team1: oid(pairs[i].t1),
-        team2: oid(pairs[i].t2),
-        gamesToWin,
-        allowDraw: false,
-        score1: 0,
-        score2: 0,
-        status: "scheduled",
-      })
-    );
+  await Promise.all([team1.save(), team2.save()]);
+}
+
+// Apply Stats (บวกค่าใหม่เข้าไป)
+async function applyTeamStats(newMatch) {
+  if (!newMatch || newMatch.status !== "finished" || !newMatch.team1 || !newMatch.team2) return;
+
+  const [team1, team2] = await Promise.all([
+    Team.findById(newMatch.team1),
+    Team.findById(newMatch.team2),
+  ]);
+  if (!team1 || !team2) return;
+
+  const res = calculateSetsAndScores(newMatch.sets || []);
+
+  // Logic Apply... (เพิ่มค่า)
+  team1.matchesPlayed = (team1.matchesPlayed||0) + 1;
+  team2.matchesPlayed = (team2.matchesPlayed||0) + 1;
+
+  team1.scoreFor = (team1.scoreFor||0) + res.score1;
+  team1.scoreAgainst = (team1.scoreAgainst||0) + res.score2;
+  team2.scoreFor = (team2.scoreFor||0) + res.score2;
+  team2.scoreAgainst = (team2.scoreAgainst||0) + res.score1;
+
+  team1.setsFor = (team1.setsFor||0) + res.setsWon1;
+  team1.setsAgainst = (team1.setsAgainst||0) + res.setsWon2;
+  team2.setsFor = (team2.setsFor||0) + res.setsWon2;
+  team2.setsAgainst = (team2.setsAgainst||0) + res.setsWon1;
+
+  if (newMatch.winner) {
+      if (String(newMatch.winner) === String(team1._id)) {
+          team1.wins = (team1.wins||0) + 1;
+          team2.losses = (team2.losses||0) + 1;
+      } else {
+          team2.wins = (team2.wins||0) + 1;
+          team1.losses = (team1.losses||0) + 1;
+      }
+  } else {
+      team1.draws = (team1.draws||0) + 1;
+      team2.draws = (team2.draws||0) + 1;
   }
-  await Promise.all(creates);
-  return { createdMatches: creates.length };
+
+  // Re-calc diff & points
+  team1.scoreDiff = (team1.scoreFor||0) - (team1.scoreAgainst||0);
+  team2.scoreDiff = (team2.scoreFor||0) - (team2.scoreAgainst||0);
+  team1.setsDiff = (team1.setsFor||0) - (team1.setsAgainst||0);
+  team2.setsDiff = (team2.setsFor||0) - (team2.setsAgainst||0);
+  recomputePoints(team1);
+  recomputePoints(team2);
+
+  await Promise.all([team1.save(), team2.save()]);
 }
 
-async function listKnockout() {
-  const matches = await Match.find({
-    tournamentId: "default",
-    roundType: "knockout",
-  })
-    .populate("team1", "teamName")
-    .populate("team2", "teamName")
-    .sort({ round: 1, matchNo: 1 })
-    .lean();
-
-  const rounds = {};
-  matches.forEach((m) => {
-    const name = m.round || "Knockout";
-    if (!rounds[name]) rounds[name] = [];
-    rounds[name].push(m);
-  });
-
-  return Object.keys(rounds).map((name) => ({ name, matches: rounds[name] }));
-}
-
+// ------------------------------------------------------
+// EXPORTS
+// ------------------------------------------------------
 module.exports = {
-  // เดิมคง export createMatchId เพื่อ compat (ถ้าตัวอื่นอ้างถึง)
-  // แต่ภายในไฟล์นี้เราใช้ createGroupMatchId / createKoMatchId แทน
-  createMatchId: (hand, part, order, padDigits = 2) =>
-    `${upper(hand)}-${upper(part)}-M${pad(order, padDigits)}`,
+  createMatchId: createGroupMatchId,
   manualGroupAndGenerate,
-  generateMatches,
   listAllMatches,
   listSchedule,
   updateSchedule,
-  updateScore,
   reorderMatches,
   getStandings,
-  listKnockout,
-  generateKnockout,
+  applyTeamStats,
+  revertTeamStats,
 };
