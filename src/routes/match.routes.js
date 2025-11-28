@@ -171,38 +171,68 @@ async function applyTeamStats(newMatch) {
 router.get("/", async (req, res, next) => {
   try {
     const { tournamentId, handLevel, group, roundType, round, status, q, sort, page, pageSize } = req.query;
+    
+    // --- [1. ประกาศตัวแปร filter] ---
     const filter = {};
     if (tournamentId) filter.tournamentId = tournamentId;
+    else filter.tournamentId = "default"; // หรือจะไม่ใส่ก็ได้แล้วแต่ Logic
+
     if (handLevel) filter.handLevel = handLevel;
     if (group) filter.group = group;
     if (roundType) filter.roundType = roundType;
     if (round) filter.round = round;
+    
+    // Status รองรับหลายสถานะคั่นด้วย comma เช่น "scheduled,in-progress"
     if (status) {
-       const s = status.split(",").map(x=>x.trim()).filter(Boolean);
-       filter.status = s.length > 1 ? {$in: s} : s[0];
+      const arr = status.split(",").map(s => s.trim()).filter(Boolean);
+      if (arr.length > 0) filter.status = { $in: arr };
     }
+
+    // Search (q)
     if (q) {
-       const rg = new RegExp(String(q).trim(), "i");
-       filter.$or = [{ matchId: rg }, { handLevel: rg }, { group: rg }, { round: rg }, { court: rg }];
+      const regex = new RegExp(q, "i");
+      // ถ้าจะค้นหาชื่อทีม ต้องไปหา Team ID ก่อน (ซับซ้อนหน่อย) หรือค้นหาแค่ MatchID ง่ายๆ
+      // ในที่นี้สมมติค้นหาแค่ Match No / ID ละกัน เพื่อความรวดเร็ว
+      // ถ้าจะค้นชื่อทีมต้องใช้ lookup หรือหา Team ID มาใส่ $in
+      filter.$or = [
+          { matchId: regex },
+          { round: regex }
+      ];
     }
+
+    // --- [2. ประกาศตัวแปร sOpt (Sort Options)] ---
+    const sOpt = {};
+    if (sort) {
+       const parts = sort.split(",");
+       parts.forEach(p => {
+         const [k, d] = p.split(":");
+         sOpt[k] = (d === "desc") ? -1 : 1;
+       });
+    } else {
+       sOpt.matchNo = 1; // Default Sort
+    }
+
+    // --- [3. Pagination] ---
     const p = Math.max(1, parseInt(page)||1);
     const ps = Math.min(5000, Math.max(1, parseInt(pageSize)||50));
     const skip = (p-1)*ps;
     
-    const sOpt = {};
-    if (sort) {
-       String(sort).split(",").forEach(f => {
-         let k = f.trim();
-         let d = 1;
-         if (k.startsWith("-")) { d = -1; k = k.slice(1); }
-         if (k) sOpt[k] = d;
-       });
-    }
-    if (!Object.keys(sOpt).length) sOpt.matchNo = 1;
-
+    // --- [4. Query Data] ---
     const [total, items] = await Promise.all([
        Match.countDocuments(filter),
-       Match.find(filter).populate("team1").populate("team2").sort(sOpt).skip(skip).limit(ps)
+       Match.find(filter)
+          // ✅ ดึงชื่อนักกีฬามาด้วย (Nested Populate)
+          .populate({
+            path: "team1",
+            populate: { path: "players", select: "fullName nickname" }
+          })
+          .populate({
+            path: "team2",
+            populate: { path: "players", select: "fullName nickname" }
+          })
+          .sort(sOpt)
+          .skip(skip)
+          .limit(ps)
     ]);
     res.json({ items, total, page: p, pageSize: ps });
   } catch(e) { next(e); }
