@@ -353,7 +353,17 @@ router.patch("/reorder", async (req, res, next) => {
   try {
     const { orderedIds } = req.body || {};
     if(!Array.isArray(orderedIds)) return res.status(400).json({message:"Required array"});
-    const ops = orderedIds.map((id,i) => ({ updateOne: { filter: {_id:id}, update: {$set:{matchNo:i+1}} } }));
+    const ops = orderedIds.map((id,i) => ({ 
+    updateOne: { 
+        filter: {_id:id}, 
+        update: { 
+            $set: { 
+                matchNo: i + 1,      // ใช้สำหรับเรียงลำดับทั่วไป
+                orderIndex: i + 1    // <--- เพิ่มตัวนี้! เพื่อบอก Frontend ว่า "จัดแล้ว" (Locked)
+            } 
+        } 
+    } 
+  }));
     const r = await Match.bulkWrite(ops);
     res.json({ updated: r.modifiedCount });
   } catch(e) { next(e); }

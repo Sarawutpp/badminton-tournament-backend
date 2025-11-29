@@ -70,6 +70,11 @@ const matchSchema = new Schema(
       index: true,
       // running number ภายใน tournamentId + handLevel + roundType + round
     },
+    orderIndex: {
+      type: Number,
+      default: 0, 
+      index: true, // ควร index ไว้เพราะใช้ sort ในหน้า AdminSchedulePlan
+    },
 
     // รหัสแมตช์ เช่น:
     // - รอบแบ่งกลุ่ม: BABY-A-R1-M01
