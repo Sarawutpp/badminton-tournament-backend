@@ -1,17 +1,87 @@
-// routes/tournament.routes.js  (เวอร์ชันปรับปรุง)
+// routes/tournament.routes.js
 const router = require('express').Router();
 const mongoose = require('mongoose');
 const Match = require("../models/match.model");
 const Team  = require("../models/team.model");
+// [เพิ่ม] Import Tournament Model (จำเป็นสำหรับหน้าเลือกงาน)
+const Tournament = require("../models/tournament.model"); 
 const TournamentService = require('../services/tournament.service');
+const { authMiddleware, requireAdmin } = require("./auth.routes");
 
-// ----------------- helpers -----------------
+router.post("/", async (req, res, next) => {
+  try {
+    const { name, location, dateRange, settings } = req.body;
+    
+    if (!name) {
+        return res.status(400).json({ message: "Tournament name is required" });
+    }
+
+    const newTournament = new Tournament({
+      name,
+      location,
+      dateRange,
+      settings: {
+        maxScore: Number(settings?.maxScore) || 21,
+        totalCourts: Number(settings?.totalCourts) || 4,
+        categories: settings?.categories || [],
+        rallyPoint: true
+      },
+      status: 'active'
+    });
+
+    const saved = await newTournament.save();
+    res.status(201).json(saved);
+  } catch(e) { next(e); }
+});
+
+// GET /api/tournaments (ดึงรายชื่อทั้งหมด)
+router.get("/", async (req, res, next) => {
+  try {
+    // ดึงรายชื่อเรียงตามวันที่สร้างล่าสุด
+    const list = await Tournament.find().sort({ createdAt: -1 }); 
+    res.json(list);
+  } catch(e) { next(e); }
+});
+
+// GET /api/tournaments/:id (ดึงรายละเอียดงานเดียว)
+router.get("/:id", async (req, res, next) => {
+    try {
+        const t = await Tournament.findById(req.params.id);
+        if(!t) return res.status(404).json({message:"Not Found"});
+        res.json(t);
+    } catch(e) { next(e); }
+});
+
+router.post("/", authMiddleware, requireAdmin, async (req, res, next) => {
+  try {
+    const { name, location, dateRange, settings } = req.body;
+    
+    if (!name) return res.status(400).json({ message: "Tournament name is required" });
+
+    const newTournament = new Tournament({
+      name,
+      location,
+      dateRange,
+      settings: {
+        maxScore: Number(settings?.maxScore) || 21,
+        totalCourts: Number(settings?.totalCourts) || 4,
+        categories: settings?.categories || [],
+        rallyPoint: true
+      },
+      status: 'active'
+    });
+
+    const saved = await newTournament.save();
+    res.status(201).json(saved);
+  } catch(e) { next(e); }
+});
+
+// ----------------------------------------------------------------------
+// LOGIC เดิม (Helpers & Group Generation)
+// ----------------------------------------------------------------------
+
 function normalizeHand(input = '') {
-  return String(input)
-    .replace(/\(.*?\)/g, '')     // ตัดวงเล็บท้ายชื่อมือ
-    .replace(/^เดี่ยว\s+/, '')   // ตัดคำว่า "เดี่ยว "
-    .trim()
-    .toUpperCase();
+  return String(input).replace(/\(.*?\)/g, '').replace(/^เดี่ยว\s+/, '').trim().toUpperCase();
 }
 
 function groupLetterFromName(name = '') {
@@ -20,9 +90,6 @@ function groupLetterFromName(name = '') {
   return mm ? mm[1].toUpperCase() : s.slice(-1).toUpperCase();
 }
 
-function pad(n, size = 2) { return String(n).padStart(size, '0'); }
-
-// เดาจำนวนทีมจากคู่ KO เพื่อตั้ง koCode อัตโนมัติ เมื่อไม่ส่งมา
 function inferKoCodeByPairs(countMatches) {
   const teams = countMatches * 2;
   if (teams === 16) return 'KO16';
@@ -32,46 +99,32 @@ function inferKoCodeByPairs(countMatches) {
   return `KO${teams}`;
 }
 
-// ----------------- GROUPS -----------------
-
-/**
- * Manual groups + Round Robin (เป็น "รอบ")
- * body ตัวอย่างที่รองรับ:
- * {
- *   tournamentId: "default",
- *   handLevel: "BABY",
- *   groups: { "A": ["teamId1","teamId2",...], "B": [...] }
- * }
- */
+// สร้างกลุ่มแบบ Manual
 router.post('/generate-groups/manual', async (req, res, next) => {
   try {
+    // Service จะอ่าน tournamentId จาก body เพื่อไปดึง Config
     const result = await TournamentService.manualGroupAndGenerate(req.body);
     return res.status(201).json(result);
   } catch (err) { next(err); }
 });
 
-/**
- * Auto groups + RR:
- * - กรณีส่ง groupNames มา (เช่น ["Group A","Group B","Group C"]) จะกระจายทีมลงแต่ละกลุ่มให้เท่าๆ กัน
- *   แล้วเรียก manualGroupAndGenerate เพื่อให้ได้ฟอร์แมต matchId/groupRound ตามมาตรฐานเดียวกัน
- * - กรณีไม่ส่ง groupNames ให้ใช้ teamsPerGroup + generateMatches("RR") เป็นทางลัด
- */
+// สร้างกลุ่มแบบ Auto
 router.post('/generate-groups', async (req, res, next) => {
   try {
     const {
       handLevel,
       tournamentId = 'default',
-      groupNames,          // เช่น ["Group A","Group B"]
-      teamsPerGroup = 4,   // ใช้เมื่อไม่ส่ง groupNames
+      groupNames,
+      teamsPerGroup = 4,
     } = req.body || {};
 
     const level = normalizeHand(handLevel);
     if (!level) throw new Error("handLevel is required for auto-generation");
 
-    const allTeams = await Team.find({ handLevel: level }).select('_id teamName').lean();
+    // [Phase 2] Filter Team by Tournament
+    const allTeams = await Team.find({ handLevel: level, tournamentId }).select('_id teamName').lean();
     if (!allTeams.length) return res.status(400).json({ message: 'No teams to group' });
 
-    // มีรายชื่อกลุ่มมา -> จัดกลุ่มแบบเท่าๆ กัน แล้วส่งเข้า manualGroupAndGenerate
     if (Array.isArray(groupNames) && groupNames.length) {
       const shuffled = allTeams.slice().sort(() => Math.random() - 0.5);
       const buckets = groupNames.map((name) => ({
@@ -93,148 +146,29 @@ router.post('/generate-groups', async (req, res, next) => {
       });
     }
 
-    // ไม่กำหนด groupNames -> ใช้ teamsPerGroup + strategy RR
-    const result = await TournamentService.generateMatches(level, 'RR', teamsPerGroup);
-    return res.status(201).json(result);
+    return res.status(400).json({ message: "Please provide groupNames" });
   } catch (err) { next(err); }
 });
 
-// ----------------- KNOCKOUT -----------------
-
-/**
- * Manual KO:
- * body ตัวอย่าง:
- * {
- *   tournamentId: "default",
- *   handLevel: "BABY",
- *   koCode: "KO16" | "QF" | "SF" | "F",
- *   pairs: [ { t1: "<ObjectId>", t2: "<ObjectId>" }, ... ]   // เรียงลำดับไว้แล้ว
- * }
- */
-router.post('/generate-knockout/manual', async (req, res, next) => {
-  try {
-    const {
-      tournamentId = 'default',
-      handLevel,
-      koCode,
-      pairs = [],
-      gamesToWin = 2
-    } = req.body || {};
-
-    const level = normalizeHand(handLevel);
-    if (!level) throw new Error('handLevel is required');
-    if (!Array.isArray(pairs) || pairs.length === 0) throw new Error('pairs is required (non-empty)');
-
-    const roundCode = koCode || inferKoCodeByPairs(pairs.length);
-
-    const result = await TournamentService.generateKnockout({
-      tournamentId,
-      handLevel: level,
-      koCode: roundCode,
-      pairs,
-      gamesToWin
-    });
-
-    return res.status(201).json({ ...result, koCode: roundCode });
-  } catch (err) { next(err); }
-});
-
-/**
- * Auto KO (Top2 per group, ประกบ A1-B2, B1-A2, ... ทีละคู่ของกลุ่ม):
- * body ตัวอย่าง:
- * {
- *   tournamentId: "default",
- *   handLevel: "BABY",
- *   groupLetters: ["A","B","C","D"],     // ต้องเรียงลำดับตามสาย
- *   gamesToWin: 2,
- *   koCode: "QF"                          // ถ้าไม่ส่ง จะเดาตามจำนวนคู่
- * }
- */
-router.post('/generate-knockout/auto', async (req, res, next) => {
-  try {
-    const {
-      tournamentId = 'default',
-      handLevel,
-      groupLetters = ['A','B'],
-      gamesToWin = 2,
-      koCode
-    } = req.body || {};
-
-    const level = normalizeHand(handLevel);
-    if (!level) throw new Error('handLevel is required');
-    if (!Array.isArray(groupLetters) || groupLetters.length < 2) {
-      throw new Error('groupLetters is required (>=2)');
-    }
-
-    // ดึงอันดับกลุ่ม (Top 2) ของแต่ละตัวอักษร
-    const byGroup = {};
-    for (const L of groupLetters) {
-      const top2 = await Team.find({
-        group: L, handLevel: { $regex: new RegExp(`^${level}$`, 'i') }
-      })
-        .sort({ points: -1, scoreDifference: -1, wins: -1, scoreFor: -1 })
-        .limit(2)
-        .select('_id teamName group handLevel points scoreDifference wins scoreFor')
-        .lean();
-
-      byGroup[L] = top2;
-    }
-
-    // ประกบคู่ A1-B2, B1-A2 | C1-D2, D1-C2 | ...
-    const pairs = [];
-    for (let i = 0; i < groupLetters.length; i += 2) {
-      const G1 = groupLetters[i], G2 = groupLetters[i + 1];
-      if (!G2) break;
-      const [G1_1, G1_2] = byGroup[G1] || [];
-      const [G2_1, G2_2] = byGroup[G2] || [];
-      if (G1_1 && G2_2) pairs.push({ t1: G1_1._id, t2: G2_2._id });
-      if (G2_1 && G1_2) pairs.push({ t1: G2_1._id, t2: G1_2._id });
-    }
-
-    if (!pairs.length) return res.status(400).json({ message: 'No pairs generated (check groups/standings)' });
-
-    const roundCode = koCode || inferKoCodeByPairs(pairs.length);
-
-    const result = await TournamentService.generateKnockout({
-      tournamentId,
-      handLevel: level,
-      koCode: roundCode,
-      pairs,
-      gamesToWin
-    });
-
-    return res.status(201).json({ ...result, koCode: roundCode, pairs: pairs.length });
-  } catch (err) { next(err); }
-});
-
-// ----------------- STANDINGS / OVERVIEW -----------------
-
+// ดึงตารางคะแนน (Standings)
 router.get("/standings", async (req, res, next) => {
   try {
     const { handLevel, tournamentId } = req.query;
-
-    if (!handLevel) {
-      return res
-        .status(400)
-        .json({ message: "handLevel query param is required" });
-    }
-
-    const data = await TournamentService.getStandings(
-      handLevel,
-      tournamentId || null
-    );
-
+    if (!handLevel) return res.status(400).json({ message: "handLevel required" });
+    const data = await TournamentService.getStandings(handLevel, tournamentId);
     res.json(data);
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 });
 
-router.get('/overview', async (_req, res, next) => {
+// ดูภาพรวม (Overview)
+router.get('/overview', async (req, res, next) => {
   try {
+    const { tournamentId } = req.query;
+    const filter = tournamentId ? { tournamentId } : {};
+    
     const [teamCount, matchCount] = await Promise.all([
-      Team.countDocuments(),
-      Match.countDocuments(),
+      Team.countDocuments(filter),
+      Match.countDocuments(filter),
     ]);
     return res.json({ teamCount, matchCount });
   } catch (err) { next(err); }

@@ -1,21 +1,23 @@
+// routes/team.routes.js
 const express = require("express");
 const router = express.Router();
-const Team = require("../models/team.model"); // ✅ แก้ Path
-const Player = require("../models/player.model"); // ✅ แก้ Path
+const Team = require("../models/team.model");
+const Player = require("../models/player.model");
 
-// GET / (List Teams)
+// GET List Teams
 router.get("/", async (req, res) => {
   try {
+    const { tournamentId, handLevel, competitionType } = req.query;
     const query = {};
 
-    // --- [START] ✅ แก้ไข Bug Logic ---
-    if (req.query.handLevel && req.query.handLevel !== "ALL") {
-      query.handLevel = req.query.handLevel;
-    }
-    // --- [END] ✅ แก้ไข Bug Logic ---
+    // [Phase 2] Filter by Tournament ID
+    if (tournamentId) query.tournamentId = tournamentId;
 
-    if (req.query.competitionType) {
-      query.competitionType = req.query.competitionType;
+    if (handLevel && handLevel !== "ALL") {
+      query.handLevel = handLevel;
+    }
+    if (competitionType) {
+      query.competitionType = competitionType;
     }
 
     const teams = await Team.find(query)
@@ -30,15 +32,11 @@ router.get("/", async (req, res) => {
 
 router.put("/update-ranks", async (req, res) => {
   try {
-    // รับ body เป็น array: [{ teamId: "...", manualRank: 1 }, ...]
     const { updates } = req.body; 
-    
     if (!Array.isArray(updates)) return res.status(400).json({ message: "Invalid data" });
-
     const promises = updates.map(u => 
       Team.findByIdAndUpdate(u.teamId, { manualRank: Number(u.manualRank) || 0 })
     );
-
     await Promise.all(promises);
     res.json({ message: "Updated ranks successfully" });
   } catch (e) {
@@ -46,7 +44,6 @@ router.put("/update-ranks", async (req, res) => {
   }
 });
 
-// GET /:id (Get Team by ID)
 router.get("/:id", async (req, res) => {
   try {
     const team = await Team.findById(req.params.id).populate("players");
@@ -57,10 +54,16 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// GET /byHand/:handLevel (List by HandLevel)
+// List by HandLevel
 router.get("/byHand/:handLevel", async (req, res) => {
   try {
-    const teams = await Team.find({ handLevel: req.params.handLevel })
+    const { tournamentId } = req.query;
+    const query = { handLevel: req.params.handLevel };
+    
+    // [Phase 2] Filter by Tournament ID
+    if(tournamentId) query.tournamentId = tournamentId;
+
+    const teams = await Team.find(query)
       .populate("players")
       .sort({ teamName: 1 });
     res.json(teams);
@@ -69,10 +72,16 @@ router.get("/byHand/:handLevel", async (req, res) => {
   }
 });
 
-// POST / (Create Team)
+function generateTeamCode(handLevel) {
+  const prefix = (handLevel || "XX").replace(/[^a-zA-Z0-9]/g, "").slice(0, 3).toUpperCase();
+  const suffix = Math.random().toString(36).slice(2, 7).toUpperCase();
+  return `TM-${prefix}-${suffix}`;
+}
+// Create Team
 router.post("/", async (req, res) => {
   const {
-    teamCode,
+    tournamentId,
+    // teamCode, <-- ❌ ไม่รับจาก Frontend แล้ว
     teamName,
     competitionType,
     handLevel,
@@ -83,15 +92,12 @@ router.post("/", async (req, res) => {
   } = req.body;
 
   try {
-    if (players && players.length > 0) {
-      const foundPlayers = await Player.find({ _id: { $in: players } });
-      if (foundPlayers.length !== players.length) {
-        return res.status(400).json({ message: "Some players not found" });
-      }
-    }
+    // ✅ สร้างรหัสอัตโนมัติจาก handLevel ทันที
+    const finalTeamCode = generateTeamCode(handLevel);
 
     const newTeam = new Team({
-      teamCode,
+      tournamentId: tournamentId || "default",
+      teamCode: finalTeamCode, 
       teamName,
       competitionType,
       handLevel,
@@ -102,14 +108,14 @@ router.post("/", async (req, res) => {
     });
 
     const savedTeam = await newTeam.save();
-    await savedTeam.populate("players");
+    await savedTeam.populate("players"); 
+
     res.status(201).json(savedTeam);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
 });
 
-// PUT /:id (Update Team)
 router.put("/:id", async (req, res) => {
   try {
     const updatedTeam = await Team.findByIdAndUpdate(req.params.id, req.body, {
@@ -124,7 +130,6 @@ router.put("/:id", async (req, res) => {
   }
 });
 
-// DELETE /:id (Delete Team)
 router.delete("/:id", async (req, res) => {
   try {
     const deletedTeam = await Team.findByIdAndDelete(req.params.id);

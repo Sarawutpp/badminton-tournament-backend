@@ -2,313 +2,102 @@
 
 const express = require("express");
 const router = express.Router();
-
+const mongoose = require("mongoose");
 const Match = require("../models/match.model");
 const Team = require("../models/team.model");
-const { calculateSetsAndScores } = require("../utils/scoreUtils");
-// ✅ Import Service
-const knockoutService = require("../services/knockout.service"); 
-const tournamentService = require("../services/tournament.service");
+const Tournament = require("../models/tournament.model"); 
+const knockoutService = require("../services/knockout.service");
+const { 
+  calculateSetsAndScores, 
+  applyTeamStats, 
+  revertTeamStats 
+} = require("../utils/scoreUtils");
 
-const POINTS_WIN = 3;
-const POINTS_DRAW = 1;
-const POINTS_LOSS_OR_RETIRE = 0;
-
-// Helper: ตรวจสอบ Tournament ID
-function ensureTeamTournamentId(teamDoc, fallbackTournamentId = "default") {
-  if (!teamDoc) return;
-  if (!teamDoc.tournamentId) {
-    teamDoc.tournamentId = fallbackTournamentId;
-  } else {
-    teamDoc.tournamentId = String(teamDoc.tournamentId);
+// Helper: ดึงกติกา (Rules) จาก DB
+async function getTournamentRules(tournamentId) {
+  if (!tournamentId || !mongoose.Types.ObjectId.isValid(tournamentId)) {
+    return { pointsWin: 2, pointsDraw: 1, pointsLose: 0 };
   }
-}
-
-// Helper: คำนวณ Points ใหม่
-function recomputePoints(teamDoc) {
-  if (!teamDoc) return;
-  const wins = Number(teamDoc.wins || 0);
-  const draws = Number(teamDoc.draws || 0);
-  const losses = Number(teamDoc.losses || 0);
-
-  teamDoc.points =
-    wins * POINTS_WIN +
-    draws * POINTS_DRAW +
-    losses * POINTS_LOSS_OR_RETIRE;
-}
-
-// ------------------------------------------------------------------
-// 1. REVERT (ถอยค่าเดิมออก)
-// ------------------------------------------------------------------
-async function revertTeamStats(oldMatch) {
-  if (!oldMatch) return;
-  if (oldMatch.status !== "finished") return;
-  if (!oldMatch.team1 || !oldMatch.team2) return;
-
-  const [team1, team2] = await Promise.all([
-    Team.findById(oldMatch.team1),
-    Team.findById(oldMatch.team2),
-  ]);
-
-  if (!team1 || !team2) return;
-  ensureTeamTournamentId(team1);
-  ensureTeamTournamentId(team2);
-
-  const res = calculateSetsAndScores(oldMatch.sets || []);
-  const score1 = res.score1 || 0;
-  const score2 = res.score2 || 0;
-  const setsWon1 = res.setsWon1 || 0;
-  const setsWon2 = res.setsWon2 || 0;
-
-  team1.matchesPlayed = Math.max(0, (team1.matchesPlayed || 0) - 1);
-  team2.matchesPlayed = Math.max(0, (team2.matchesPlayed || 0) - 1);
-
-  team1.scoreFor = (team1.scoreFor || 0) - score1;
-  team1.scoreAgainst = (team1.scoreAgainst || 0) - score2;
-  team2.scoreFor = (team2.scoreFor || 0) - score2;
-  team2.scoreAgainst = (team2.scoreAgainst || 0) - score1;
-
-  team1.setsFor = (team1.setsFor || 0) - setsWon1;
-  team1.setsAgainst = (team1.setsAgainst || 0) - setsWon2;
-  team2.setsFor = (team2.setsFor || 0) - setsWon2;
-  team2.setsAgainst = (team2.setsAgainst || 0) - setsWon1;
-
-  if (oldMatch.winner) {
-    if (String(oldMatch.winner) === String(oldMatch.team1)) {
-      team1.wins = Math.max(0, (team1.wins || 0) - 1);
-      team2.losses = Math.max(0, (team2.losses || 0) - 1);
-    } else if (String(oldMatch.winner) === String(oldMatch.team2)) {
-      team2.wins = Math.max(0, (team2.wins || 0) - 1);
-      team1.losses = Math.max(0, (team1.losses || 0) - 1);
-    }
-  } else {
-    team1.draws = Math.max(0, (team1.draws || 0) - 1);
-    team2.draws = Math.max(0, (team2.draws || 0) - 1);
-  }
-
-  if (team1.matchScores && team1.matchScores.length > 0) team1.matchScores.pop();
-  if (team2.matchScores && team2.matchScores.length > 0) team2.matchScores.pop();
-
-  team1.scoreDiff = (team1.scoreFor || 0) - (team1.scoreAgainst || 0);
-  team2.scoreDiff = (team2.scoreFor || 0) - (team2.scoreAgainst || 0);
-  team1.setsDiff = (team1.setsFor || 0) - (team1.setsAgainst || 0);
-  team2.setsDiff = (team2.setsFor || 0) - (team2.setsAgainst || 0);
-  recomputePoints(team1);
-  recomputePoints(team2);
-
-  await Promise.all([team1.save(), team2.save()]);
-}
-
-// ------------------------------------------------------------------
-// 2. APPLY (ใส่ค่าใหม่เข้าไป)
-// ------------------------------------------------------------------
-async function applyTeamStats(newMatch) {
-  if (!newMatch) return;
-  if (newMatch.status !== "finished") return;
-  if (!newMatch.team1 || !newMatch.team2) return;
-
-  const [team1, team2] = await Promise.all([
-    Team.findById(newMatch.team1),
-    Team.findById(newMatch.team2),
-  ]);
-
-  if (!team1 || !team2) return;
-  ensureTeamTournamentId(team1);
-  ensureTeamTournamentId(team2);
-
-  const res = calculateSetsAndScores(newMatch.sets || []);
-  const score1 = res.score1 || 0;
-  const score2 = res.score2 || 0;
-  const setsWon1 = res.setsWon1 || 0;
-  const setsWon2 = res.setsWon2 || 0;
-
-  team1.matchesPlayed = (team1.matchesPlayed || 0) + 1;
-  team2.matchesPlayed = (team2.matchesPlayed || 0) + 1;
-
-  team1.scoreFor = (team1.scoreFor || 0) + score1;
-  team1.scoreAgainst = (team1.scoreAgainst || 0) + score2;
-  team2.scoreFor = (team2.scoreFor || 0) + score2;
-  team2.scoreAgainst = (team2.scoreAgainst || 0) + score1;
-
-  team1.setsFor = (team1.setsFor || 0) + setsWon1;
-  team1.setsAgainst = (team1.setsAgainst || 0) + setsWon2;
-  team2.setsFor = (team2.setsFor || 0) + setsWon2;
-  team2.setsAgainst = (team2.setsAgainst || 0) + setsWon1;
-
-  if (newMatch.winner) {
-    if (String(newMatch.winner) === String(newMatch.team1)) {
-      team1.wins = (team1.wins || 0) + 1;
-      team2.losses = (team2.losses || 0) + 1;
-    } else if (String(newMatch.winner) === String(newMatch.team2)) {
-      team2.wins = (team2.wins || 0) + 1;
-      team1.losses = (team1.losses || 0) + 1;
-    }
-  } else {
-    team1.draws = (team1.draws || 0) + 1;
-    team2.draws = (team2.draws || 0) + 1;
-  }
-
-  if (!team1.matchScores) team1.matchScores = [];
-  if (!team2.matchScores) team2.matchScores = [];
-  
-  team1.matchScores.push(`${setsWon1}-${setsWon2}`);
-  team2.matchScores.push(`${setsWon2}-${setsWon1}`);
-
-  team1.scoreDiff = (team1.scoreFor || 0) - (team1.scoreAgainst || 0);
-  team2.scoreDiff = (team2.scoreFor || 0) - (team2.scoreAgainst || 0);
-  team1.setsDiff = (team1.setsFor || 0) - (team1.setsAgainst || 0);
-  team2.setsDiff = (team2.setsFor || 0) - (team2.setsAgainst || 0);
-  recomputePoints(team1);
-  recomputePoints(team2);
-
-  await Promise.all([team1.save(), team2.save()]);
+  const tour = await Tournament.findById(tournamentId).select("rules").lean();
+  return tour?.rules || { pointsWin: 2, pointsDraw: 1, pointsLose: 0 };
 }
 
 // ------------------------------------------------------------------
 // Routes
 // ------------------------------------------------------------------
 
-router.get("/", async (req, res, next) => {
-  try {
-    const { tournamentId, handLevel, group, roundType, round, status, q, sort, page, pageSize } = req.query;
-    
-    // --- [1. ประกาศตัวแปร filter] ---
-    const filter = {};
-    if (tournamentId) filter.tournamentId = tournamentId;
-    else filter.tournamentId = "default"; // หรือจะไม่ใส่ก็ได้แล้วแต่ Logic
+// ==========================================
+// 1. Special Actions (Mock & Auto Generate)
+// ==========================================
 
-    if (handLevel) filter.handLevel = handLevel;
-    if (group) filter.group = group;
-    if (roundType) filter.roundType = roundType;
-    if (round) filter.round = round;
-    
-    // Status รองรับหลายสถานะคั่นด้วย comma เช่น "scheduled,in-progress"
-    if (status) {
-      const arr = status.split(",").map(s => s.trim()).filter(Boolean);
-      if (arr.length > 0) filter.status = { $in: arr };
-    }
-
-    // Search (q)
-    if (q) {
-      const regex = new RegExp(q, "i");
-      // ถ้าจะค้นหาชื่อทีม ต้องไปหา Team ID ก่อน (ซับซ้อนหน่อย) หรือค้นหาแค่ MatchID ง่ายๆ
-      // ในที่นี้สมมติค้นหาแค่ Match No / ID ละกัน เพื่อความรวดเร็ว
-      // ถ้าจะค้นชื่อทีมต้องใช้ lookup หรือหา Team ID มาใส่ $in
-      filter.$or = [
-          { matchId: regex },
-          { round: regex }
-      ];
-    }
-
-    // --- [2. ประกาศตัวแปร sOpt (Sort Options)] ---
-    const sOpt = {};
-    if (sort) {
-       const parts = sort.split(",");
-       parts.forEach(p => {
-         const [k, d] = p.split(":");
-         sOpt[k] = (d === "desc") ? -1 : 1;
-       });
-    } else {
-       sOpt.matchNo = 1; // Default Sort
-    }
-
-    // --- [3. Pagination] ---
-    const p = Math.max(1, parseInt(page)||1);
-    const ps = Math.min(5000, Math.max(1, parseInt(pageSize)||50));
-    const skip = (p-1)*ps;
-    
-    // --- [4. Query Data] ---
-    const [total, items] = await Promise.all([
-       Match.countDocuments(filter),
-       Match.find(filter)
-          // ✅ ดึงชื่อนักกีฬามาด้วย (Nested Populate)
-          .populate({
-            path: "team1",
-            populate: { path: "players", select: "fullName nickname" }
-          })
-          .populate({
-            path: "team2",
-            populate: { path: "players", select: "fullName nickname" }
-          })
-          .sort(sOpt)
-          .skip(skip)
-          .limit(ps)
-    ]);
-    res.json({ items, total, page: p, pageSize: ps });
-  } catch(e) { next(e); }
-});
-
-router.get("/:id", async (req, res, next) => {
-  try {
-    const m = await Match.findById(req.params.id).populate("team1").populate("team2");
-    if(!m) return res.status(404).json({message:"Not found"});
-    res.json(m);
-  } catch(e) { next(e); }
-});
-
-router.post("/generate-knockout-auto", async (req, res, next) => {
-  try {
-    const { handLevel, round } = req.body;
-    
-    if (!handLevel || !round) {
-      return res.status(400).json({ message: "Missing handLevel or round" });
-    }
-
-    const result = await knockoutService.autoGenerateKnockoutFromStandings({
-      handLevel,
-      roundCode: round,
-    });
-
-    res.json(result);
-  } catch (e) {
-    next(e);
-  }
-});
-
+// ✅ Mock Scores Route
 router.post("/mock-scores", async (req, res, next) => {
   try {
-    const { handLevel } = req.body;
-    if (!handLevel) return res.status(400).json({ message: "Missing handLevel" });
-
-    const matches = await Match.find({
-      handLevel,
-      roundType: "group",
+    const { handLevel, tournamentId } = req.body;
+    
+    // 1. สร้าง Filter หาแมตช์ที่ยังไม่แข่ง และต้องเป็น Group เท่านั้น
+    const filter = {
+      roundType: "group", 
       status: "scheduled"
-    });
+    };
+    
+    if (handLevel) filter.handLevel = handLevel;
+    
+    // เช็ค tournamentId เพื่อความปลอดภัย
+    if (tournamentId && mongoose.Types.ObjectId.isValid(tournamentId)) {
+      filter.tournamentId = tournamentId;
+    }
+
+    // 2. หาแมตช์
+    const matches = await Match.find(filter);
 
     if (matches.length === 0) {
       return res.json({ message: "ไม่พบแมตช์ที่ต้อง Mock (อาจจะแข่งจบหมดแล้ว)" });
     }
 
+    // 3. ดึง Rules มาเตรียมไว้
+    const rules = await getTournamentRules(tournamentId);
+
     let count = 0;
     for (const m of matches) {
+      // สุ่มผู้ชนะ (1 หรือ 2)
       const winnerIdx = Math.random() > 0.5 ? 1 : 2;
-      const isThreeSets = Math.random() > 0.7; 
+      const isThreeSets = Math.random() > 0.7; // 30% โอกาสเกิด 3 เซ็ต
       
       let sets = [];
+      // สร้างคะแนนจำลอง
       if (winnerIdx === 1) { 
-         if(isThreeSets) sets = [{t1:21,t2:18}, {t1:19,t2:21}, {t1:21,t2:15}];
+         if(isThreeSets) sets = [{t1:21,t2:19}, {t1:18,t2:21}, {t1:21,t2:15}];
          else sets = [{t1:21,t2:15}, {t1:21,t2:12}];
       } else { 
-         if(isThreeSets) sets = [{t1:18,t2:21}, {t1:21,t2:19}, {t1:15,t2:21}]; 
+         if(isThreeSets) sets = [{t1:19,t2:21}, {t1:21,t1:18}, {t1:15,t2:21}]; 
          else sets = [{t1:10,t2:21}, {t1:15,t2:21}];
       }
 
+      // คำนวณสรุปผล
       const calc = calculateSetsAndScores(sets);
       
       m.sets = calc.normalizedSets;
       m.score1 = calc.score1;
       m.score2 = calc.score2;
+      
+      // Legacy fields update
+      m.set1Score1 = calc.normalizedSets[0]?.t1 || 0;
+      m.set1Score2 = calc.normalizedSets[0]?.t2 || 0;
+      m.set2Score1 = calc.normalizedSets[1]?.t1 || 0;
+      m.set2Score2 = calc.normalizedSets[1]?.t2 || 0;
+      
       m.status = "finished";
-      m.gamesToWin = 2;
-      m.allowDraw = false;
-
+      
       if (calc.setsWon1 > calc.setsWon2) m.winner = m.team1;
       else if (calc.setsWon2 > calc.setsWon1) m.winner = m.team2;
       else m.winner = null;
 
       const savedMatch = await m.save();
-      await applyTeamStats(savedMatch);
+      
+      // ✅ Mock เฉพาะ Group จึงเรียก applyTeamStats ได้เลย (เพราะ filter ไว้แล้ว)
+      await applyTeamStats(savedMatch, rules);
+      
       count++;
     }
 
@@ -321,6 +110,124 @@ router.post("/mock-scores", async (req, res, next) => {
   } catch (e) {
     next(e);
   }
+});
+
+// ✅ Generate Knockout Auto
+router.post("/generate-knockout-auto", async (req, res, next) => {
+  try {
+    const { handLevel, round, tournamentId } = req.body;
+    
+    if (!handLevel || !round) {
+      return res.status(400).json({ message: "Missing handLevel or round" });
+    }
+
+    const result = await knockoutService.autoGenerateKnockoutFromStandings({
+      handLevel,
+      roundCode: round,
+      tournamentId // ส่ง tournamentId เข้าไปด้วย
+    });
+
+    res.json(result);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// ==========================================
+// 2. Standard CRUD Routes
+// ==========================================
+
+// GET Matches
+router.get("/", async (req, res, next) => {
+  try {
+    const { 
+      tournamentId, 
+      handLevel, 
+      group, 
+      roundType, 
+      round, 
+      status, 
+      q, 
+      sort, 
+      page, 
+      pageSize, 
+      court 
+    } = req.query;
+    
+    const filter = {};
+    
+    if (tournamentId && mongoose.Types.ObjectId.isValid(tournamentId)) {
+       filter.tournamentId = tournamentId;
+    } 
+
+    if (handLevel) filter.handLevel = handLevel;
+    if (group) filter.group = group;
+    if (roundType) filter.roundType = roundType;
+    if (round) filter.round = round;
+    if (court) filter.court = String(court);
+
+    if (status) {
+      const arr = status.split(",").map(s => s.trim()).filter(Boolean);
+      if (arr.length > 0) filter.status = { $in: arr };
+    }
+
+    // Search Logic
+    if (q) {
+      const regex = new RegExp(q, "i");
+      
+      const teamFilter = { teamName: regex };
+      if (filter.tournamentId) {
+          teamFilter.tournamentId = filter.tournamentId;
+      }
+
+      const matchingTeams = await Team.find(teamFilter).select('_id');
+      const teamIds = matchingTeams.map(t => t._id);
+
+      filter.$or = [
+          { matchId: regex },
+          { round: regex },
+          { team1: { $in: teamIds } },
+          { team2: { $in: teamIds } }
+      ];
+    }
+
+    const sOpt = {};
+    if (sort) {
+       const parts = sort.split(",");
+       parts.forEach(p => {
+         const [k, d] = p.split(":");
+         sOpt[k] = (d === "desc") ? -1 : 1;
+       });
+    } else {
+       sOpt.matchNo = 1; 
+    }
+
+    const p = Math.max(1, parseInt(page)||1);
+    const ps = Math.min(5000, Math.max(1, parseInt(pageSize)||50));
+    const skip = (p-1)*ps;
+    
+    const [total, items] = await Promise.all([
+       Match.countDocuments(filter),
+       Match.find(filter)
+          .populate({ path: "team1", populate: { path: "players", select: "fullName nickname" } })
+          .populate({ path: "team2", populate: { path: "players", select: "fullName nickname" } })
+          .sort(sOpt)
+          .skip(skip)
+          .limit(ps)
+    ]);
+    res.json({ items, total, page: p, pageSize: ps });
+  } catch(e) { next(e); }
+});
+
+router.get("/:id", async (req, res, next) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+        return res.status(404).json({message:"Invalid ID"});
+    }
+    const m = await Match.findById(req.params.id).populate("team1").populate("team2");
+    if(!m) return res.status(404).json({message:"Not found"});
+    res.json(m);
+  } catch(e) { next(e); }
 });
 
 router.post("/", async (req, res, next) => {
@@ -354,16 +261,11 @@ router.patch("/reorder", async (req, res, next) => {
     const { orderedIds } = req.body || {};
     if(!Array.isArray(orderedIds)) return res.status(400).json({message:"Required array"});
     const ops = orderedIds.map((id,i) => ({ 
-    updateOne: { 
-        filter: {_id:id}, 
-        update: { 
-            $set: { 
-                matchNo: i + 1,      // ใช้สำหรับเรียงลำดับทั่วไป
-                orderIndex: i + 1    // <--- เพิ่มตัวนี้! เพื่อบอก Frontend ว่า "จัดแล้ว" (Locked)
-            } 
-        } 
-    } 
-  }));
+      updateOne: { 
+          filter: {_id:id}, 
+          update: { $set: { matchNo: i + 1, orderIndex: i + 1 } } 
+      } 
+    }));
     const r = await Match.bulkWrite(ops);
     res.json({ updated: r.modifiedCount });
   } catch(e) { next(e); }
@@ -377,15 +279,23 @@ router.delete("/:id", async (req, res, next) => {
   } catch(e) { next(e); }
 });
 
-// ------------------------------------------------------
-// UPDATE SCORE (บันทึกคะแนน และ Auto Advance)
-// ------------------------------------------------------
+// ==========================================
+// 3. Scoring Route (Manual Update)
+// ==========================================
 router.put("/:id/score", async (req, res, next) => {
   try {
     const match = await Match.findById(req.params.id);
     if (!match) return res.status(404).json({ message: "Match not found" });
 
-    const previousMatch = match.toObject();
+    // 1. เตรียม Rules ก่อน
+    const rules = await getTournamentRules(match.tournamentId);
+
+    // 2. ถ้าเคยแข่งจบแล้ว ให้ถอยค่าสถิติเดิมออกก่อน (Revert)
+    // ✅ [FIX] เช็คเพิ่ม: ต้องเป็น Group เท่านั้นถึงจะถอยแต้ม
+    if (match.status === "finished" && match.roundType === "group") {
+        await revertTeamStats(match, rules);
+    }
+
     const { sets: rawSets, gamesToWin: gw, allowDraw: ad, status: st } = req.body || {};
 
     const calc = calculateSetsAndScores(rawSets || match.sets || []);
@@ -409,12 +319,7 @@ router.put("/:id/score", async (req, res, next) => {
       else winner = null;
     }
 
-    // 1. บันทึก Sets แบบ Array (โครงสร้างใหม่)
     match.sets = normalizedSets;
-    match.markModified("sets");
-
-    // 2. [เพิ่มส่วนนี้] Sync กลับไปใส่ Legacy Fields เพื่อให้ดูใน DB ง่ายขึ้น
-    // และรองรับโค้ดเก่าที่อาจจะดึง set1Score1 โดยตรง
     match.set1Score1 = normalizedSets[0]?.t1 || 0;
     match.set1Score2 = normalizedSets[0]?.t2 || 0;
     match.set2Score1 = normalizedSets[1]?.t1 || 0;
@@ -431,9 +336,13 @@ router.put("/:id/score", async (req, res, next) => {
 
     const savedMatch = await match.save();
 
-    await revertTeamStats(previousMatch);
-    await applyTeamStats(savedMatch);
+    // 3. ใส่ค่าสถิติใหม่เข้าไป (Apply)
+    // ✅ [FIX] เช็คเพิ่ม: ต้องเป็น Group เท่านั้นถึงจะบวกแต้ม
+    if (savedMatch.roundType === "group") {
+       await applyTeamStats(savedMatch, rules);
+    }
 
+    // Auto-advance Knockout Winner
     if (savedMatch.roundType === "knockout" && savedMatch.status === "finished") {
       await knockoutService.advanceKnockoutWinner(savedMatch);
     }
