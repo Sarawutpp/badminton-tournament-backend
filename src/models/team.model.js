@@ -13,6 +13,12 @@ const teamSchema = new Schema(
       // เอา set: ... ออก เพราะเราต้องการ ObjectId จริงๆ ไม่ใช่ String "default"
     },
 
+    teamCode: {
+      type: String,
+      required: true,
+      unique: true, // ป้องกันซ้ำ
+    },
+
     handLevel: { type: String, required: true, index: true, trim: true },
     group: { type: String, trim: true },
     groupOrder: { type: Number, default: 0 },
