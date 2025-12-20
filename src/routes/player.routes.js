@@ -2,6 +2,7 @@
 const express = require("express");
 const router = express.Router();
 const Player = require("../models/player.model");
+const { authMiddleware, requireAdmin } = require("./auth.routes");
 
 
 const genCode = (prefix) =>
@@ -32,7 +33,7 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-router.post("/", async (req, res) => {
+router.post("/", authMiddleware, requireAdmin, async (req, res) => {
   const { tournamentId, fullName, nickname, age, lastCompetition, photoUrl } = req.body;
 
   if (!fullName) return res.status(400).json({ message: "Full name is required" });
@@ -54,7 +55,7 @@ router.post("/", async (req, res) => {
     res.status(400).json({ message: err.message });
   }
 });
-router.post("/import", async (req, res) => {
+router.post("/import", authMiddleware, requireAdmin, async (req, res) => {
   const { tournamentId, players } = req.body; // players = [{ fullName, nickname, age }, ...]
 
   if (!Array.isArray(players) || players.length === 0) {
@@ -79,7 +80,7 @@ router.post("/import", async (req, res) => {
   }
 });
 
-router.put("/:id", async (req, res) => {
+router.put("/:id", authMiddleware, requireAdmin, async (req, res) => {
   try {
     const updatedPlayer = await Player.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
     if (!updatedPlayer) return res.status(404).json({ message: "Player not found" });
@@ -89,7 +90,7 @@ router.put("/:id", async (req, res) => {
   }
 });
 
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", authMiddleware, requireAdmin, async (req, res) => {
   try {
     const deletedPlayer = await Player.findByIdAndDelete(req.params.id);
     if (!deletedPlayer) return res.status(404).json({ message: "Player not found" });

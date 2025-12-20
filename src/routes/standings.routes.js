@@ -7,6 +7,7 @@ const Match = require("../models/match.model");
 const Tournament = require("../models/tournament.model");
 const TournamentService = require("../services/tournament.service");
 const { applyTeamStats } = require("../utils/scoreUtils");
+const { authMiddleware, requireAdmin } = require("./auth.routes");
 
 // GET Standings
 router.get("/", async (req, res, next) => {
@@ -22,7 +23,7 @@ router.get("/", async (req, res, next) => {
 });
 
 // POST Recalculate (ใช้ Rules จาก DB)
-router.post("/recalculate", async (req, res, next) => {
+router.post("/recalculate", authMiddleware, requireAdmin, async (req, res, next) => {
   try {
     const { handLevel, tournamentId } = req.body || {};
     if (!handLevel) return res.status(400).json({ message: "handLevel is required" });
@@ -75,7 +76,7 @@ router.post("/recalculate", async (req, res, next) => {
 });
 
 // POST Clear (Reset everything)
-router.post("/clear", async (req, res) => {
+router.post("/clear", authMiddleware, requireAdmin, async (req, res) => {
   try {
     const { handLevel, tournamentId, resetMatches = true } = req.body || {};
     if (!handLevel) return res.status(400).json({ message: "handLevel required" });

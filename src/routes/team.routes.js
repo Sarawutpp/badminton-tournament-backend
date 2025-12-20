@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 const Team = require("../models/team.model");
 const Player = require("../models/player.model");
+const { authMiddleware, requireAdmin } = require("./auth.routes");
 
 // GET List Teams
 router.get("/", async (req, res) => {
@@ -30,7 +31,7 @@ router.get("/", async (req, res) => {
   }
 });
 
-router.put("/update-ranks", async (req, res) => {
+router.put("/update-ranks", authMiddleware, requireAdmin, async (req, res) => {
   try {
     const { updates } = req.body; 
     if (!Array.isArray(updates)) return res.status(400).json({ message: "Invalid data" });
@@ -78,7 +79,7 @@ function generateTeamCode(handLevel) {
   return `TM-${prefix}-${suffix}`;
 }
 // Create Team
-router.post("/", async (req, res) => {
+router.post("/", authMiddleware, requireAdmin, async (req, res) => {
   const {
     tournamentId,
     // teamCode, <-- ❌ ไม่รับจาก Frontend แล้ว
@@ -116,7 +117,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-router.put("/:id", async (req, res) => {
+router.put("/:id", authMiddleware, requireAdmin, async (req, res) => {
   try {
     const updatedTeam = await Team.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
@@ -130,7 +131,7 @@ router.put("/:id", async (req, res) => {
   }
 });
 
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", authMiddleware, requireAdmin, async (req, res) => {
   try {
     const deletedTeam = await Team.findByIdAndDelete(req.params.id);
     if (!deletedTeam)

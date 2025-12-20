@@ -12,6 +12,7 @@ const {
   applyTeamStats, 
   revertTeamStats 
 } = require("../utils/scoreUtils");
+const { authMiddleware, requireAdmin } = require("./auth.routes");
 
 // Helper: ดึงกติกา (Rules) จาก DB
 async function getTournamentRules(tournamentId) {
@@ -31,7 +32,7 @@ async function getTournamentRules(tournamentId) {
 // ==========================================
 
 // ✅ Mock Scores Route
-router.post("/mock-scores", async (req, res, next) => {
+router.post("/mock-scores", authMiddleware, requireAdmin, async (req, res, next) => {
   try {
     const { handLevel, tournamentId } = req.body;
     
@@ -113,7 +114,7 @@ router.post("/mock-scores", async (req, res, next) => {
 });
 
 // ✅ Generate Knockout Auto
-router.post("/generate-knockout-auto", async (req, res, next) => {
+router.post("/generate-knockout-auto", authMiddleware, requireAdmin, async (req, res, next) => {
   try {
     const { handLevel, round, tournamentId } = req.body;
     
@@ -230,14 +231,14 @@ router.get("/:id", async (req, res, next) => {
   } catch(e) { next(e); }
 });
 
-router.post("/", async (req, res, next) => {
+router.post("/", authMiddleware, requireAdmin, async (req, res, next) => {
   try {
      const m = new Match(req.body);
      res.status(201).json(await m.save());
   } catch(e) { next(e); }
 });
 
-router.put("/:id", async (req, res, next) => {
+router.put("/:id", authMiddleware, requireAdmin, async (req, res, next) => {
   try {
     const u = await Match.findByIdAndUpdate(req.params.id, req.body, {new:true});
     if(!u) return res.status(404).json({message:"Not found"});
@@ -245,7 +246,7 @@ router.put("/:id", async (req, res, next) => {
   } catch(e) { next(e); }
 });
 
-router.put("/:id/schedule", async (req, res, next) => {
+router.put("/:id/schedule", authMiddleware, requireAdmin, async (req, res, next) => {
   try {
     const keys = ["scheduledAt","startedAt","startTime","estimatedStartTime","court","courtNo","status","matchNo","day"];
     const up = {};
@@ -256,7 +257,7 @@ router.put("/:id/schedule", async (req, res, next) => {
   } catch(e) { next(e); }
 });
 
-router.patch("/reorder", async (req, res, next) => {
+router.patch("/reorder", authMiddleware, requireAdmin, async (req, res, next) => {
   try {
     const { orderedIds } = req.body || {};
     if(!Array.isArray(orderedIds)) return res.status(400).json({message:"Required array"});
@@ -271,7 +272,7 @@ router.patch("/reorder", async (req, res, next) => {
   } catch(e) { next(e); }
 });
 
-router.delete("/:id", async (req, res, next) => {
+router.delete("/:id", authMiddleware, requireAdmin, async (req, res, next) => {
   try {
     const m = await Match.findByIdAndDelete(req.params.id);
     if(!m) return res.status(404).json({message:"Not found"});
@@ -282,7 +283,7 @@ router.delete("/:id", async (req, res, next) => {
 // ==========================================
 // 3. Scoring Route (Manual Update)
 // ==========================================
-router.put("/:id/score", async (req, res, next) => {
+router.put("/:id/score", authMiddleware, requireAdmin, async (req, res, next) => {
   try {
     const match = await Match.findById(req.params.id);
     if (!match) return res.status(404).json({ message: "Match not found" });

@@ -8,7 +8,7 @@ const Tournament = require("../models/tournament.model");
 const TournamentService = require('../services/tournament.service');
 const { authMiddleware, requireAdmin } = require("./auth.routes");
 
-router.post("/", async (req, res, next) => {
+router.post("/", authMiddleware, requireAdmin, async (req, res, next) => {
   try {
     const { name, location, dateRange, settings } = req.body;
     
@@ -100,7 +100,7 @@ function inferKoCodeByPairs(countMatches) {
 }
 
 // สร้างกลุ่มแบบ Manual
-router.post('/generate-groups/manual', async (req, res, next) => {
+router.post('/generate-groups/manual', authMiddleware, requireAdmin, async (req, res, next) => {
   try {
     // Service จะอ่าน tournamentId จาก body เพื่อไปดึง Config
     const result = await TournamentService.manualGroupAndGenerate(req.body);
@@ -109,7 +109,7 @@ router.post('/generate-groups/manual', async (req, res, next) => {
 });
 
 // สร้างกลุ่มแบบ Auto
-router.post('/generate-groups', async (req, res, next) => {
+router.post('/generate-groups', authMiddleware, requireAdmin, async (req, res, next) => {
   try {
     const {
       handLevel,
