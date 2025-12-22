@@ -24,7 +24,8 @@ async function getTournamentConfig(tournamentId) {
     if (!tour) throw new Error("Tournament not found");
     
     return {
-        rules: tour.rules || { pointsWin: 2, pointsDraw: 1, pointsLose: 0 },
+        // ✅ แก้ Default เป็น 3 คะแนน
+        rules: tour.rules || { pointsWin: 3, pointsDraw: 1, pointsLose: 0 },
         settings: tour.settings || { maxScore: 21, totalCourts: 4, categories: [], rallyPoint: true }
     };
 }
@@ -78,16 +79,13 @@ async function manualGroupAndGenerate(body) {
   // 1. ดึง Config จาก DB
   const { settings } = await getTournamentConfig(tournamentId);
   
-  // อ่าน Config รอบแบ่งกลุ่ม
   const groupConfig = settings?.matchConfig?.groupStage || {};
   
-  // ค่า Default ถ้าหาไม่เจอ
   const gamesToWin = groupConfig.gamesToWin || 2; 
   const maxScore = groupConfig.maxScore || 21;
   const hasDeuce = groupConfig.hasDeuce ?? true; 
   const allowDraw = groupConfig.allowDraw ?? (gamesToWin === 2); 
 
-  // [ส่วนที่หายไป: แปลงข้อมูล groups จาก body] ------------------------
   let groups = body.groups;
   if (groups && !Array.isArray(groups) && typeof groups === "object") {
      const out = [];
@@ -97,17 +95,13 @@ async function manualGroupAndGenerate(body) {
      groups = out;
   }
   if (!groups || !groups.length) throw new Error("groups is required");
-  // ---------------------------------------------------------------
 
-  // Clear Matches
   await Match.deleteMany({ tournamentId, handLevel });
 
-  // Update Teams
   for (const g of groups) {
     await Team.updateMany({ _id: { $in: g.teamIds } }, { $set: { group: g.letter } });
   }
 
-  // Generate Matches
   let createdGroups = 0;
   let runningOrder = 1;
 
@@ -129,7 +123,6 @@ async function manualGroupAndGenerate(body) {
           matchId,
           team1: p.t1,
           team2: p.t2,
-          // ใช้ค่าจาก Config
           gamesToWin, 
           maxScore,
           allowDraw, 
@@ -141,7 +134,6 @@ async function manualGroupAndGenerate(body) {
     }
   }
 
-  // Generate Knockout Skeleton
   const createdKnockouts = await knockoutService.generateKnockoutSkeleton(
     tournamentId, 
     handLevel, 
@@ -174,7 +166,6 @@ async function getStandings(handLevel, tournamentId) {
     const groupName = t.group || "-";
     if (!groupsMap[groupName]) groupsMap[groupName] = [];
     
-    // Calculate derived stats
     const diff = (Number(t.scoreFor)||0) - (Number(t.scoreAgainst)||0);
     const sDiff = (Number(t.setsFor)||0) - (Number(t.setsAgainst)||0);
 

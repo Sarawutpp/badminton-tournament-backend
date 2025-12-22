@@ -7,7 +7,7 @@ const Tournament = require("../models/tournament.model");
 
 // --- Constants & Helpers ---
 
-// รุ่นที่ใช้กติกาพิเศษ (24 ทีม) - ถ้าจะยกเลิก hardcode ให้ลบ array นี้ออกแล้วใช้ logic จำนวนทีมอย่างเดียวก็ได้
+// รุ่นที่ใช้กติกาพิเศษ (24 ทีม)
 const CATEGORIES_24_TEAMS = ["BG(Men)", "BG(Mix)"];
 
 // ลำดับการไหลของรอบการแข่งขัน
@@ -63,12 +63,20 @@ async function getStandingsForSeeding(handLevel, tournamentId) {
 
   const groupsMap = {};
   for (const t of teams) {
-    const groupName = t.group || "-";
-    if (!groupsMap[groupName]) groupsMap[groupName] = [];
-    groupsMap[groupName].push({
+    // ✅ แก้ไข: ตัดตัวเลขออกจากชื่อกลุ่ม เพื่อรวม A1, A2 ให้เป็น Group A เดียวกัน
+    let rawGroup = t.group || "-";
+    // Regex: เอาเฉพาะตัวอักษรภาษาอังกฤษข้างหน้า (เช่น "A1" -> "A", "Group B" -> "Group B")
+    // หรือถ้า format เป็น A1, B2 จะตัดเลขทิ้ง
+    let groupKey = rawGroup.replace(/[0-9]/g, '').trim(); 
+    if (!groupKey) groupKey = rawGroup; // กันเหนียวถ้าชื่อกลุ่มเป็นตัวเลขล้วน
+
+    if (!groupsMap[groupKey]) groupsMap[groupKey] = [];
+    
+    groupsMap[groupKey].push({
       teamId: t._id,
       teamName: t.teamName,
-      group: t.group,
+      group: groupKey, // ใช้ชื่อกลุ่มที่ Clean แล้ว
+      originalGroup: t.group, // เก็บชื่อเดิมไว้ดูเล่น
       groupRank: 0,
       points: t.points || 0,
       scoreFor: t.scoreFor || 0,
@@ -83,6 +91,7 @@ async function getStandingsForSeeding(handLevel, tournamentId) {
 
   const groups = Object.keys(groupsMap).sort().map((groupName) => {
       const list = groupsMap[groupName];
+      // เรียงลำดับในกลุ่มเพื่อหาที่ 1, 2, 3, 4 จริงๆ
       list.sort((a, b) => comparePerformance(a, b)); 
       list.forEach((t, i) => t.groupRank = i + 1);
       return { groupName, teams: list };
@@ -139,7 +148,6 @@ async function generateKnockoutSkeleton(tournamentId, handLevel, startMatchNo, g
       throw new Error("Invalid tournamentId");
   }
 
-  // 1. นับจำนวนทีมจริง เพื่อเลือกขนาดตารางที่เหมาะสม
   const totalTeams = await Team.countDocuments({ tournamentId, handLevel });
   
   const tour = await Tournament.findById(tournamentId).select("settings").lean();
@@ -151,21 +159,15 @@ async function generateKnockoutSkeleton(tournamentId, handLevel, startMatchNo, g
 
   let roundsToGenerate = [];
 
-  // ==========================================
-  // LOGIC ใหม่: เลือกโครงสร้างตามจำนวนทีม
-  // ==========================================
   if (is24Teams || totalTeams > 16) {
-      // 17-24+ ทีม: ใช้ KO16 (รองรับได้สูงสุด 32 สล็อต: 16 บน / 16 ล่าง หรือตาม logic 24 ทีม)
       roundsToGenerate = [
-        { code: "KO16", count: 8 }, // 8 คู่บน
-        { code: "QF", count: 8 },   // 8 คู่ (4 บน / 4 ล่าง)
-        { code: "SF", count: 4 },   // 4 คู่ (2 บน / 2 ล่าง)
-        { code: "F", count: 2 }     // 2 คู่ (1 บน / 1 ล่าง)
+        { code: "KO16", count: 8 }, 
+        { code: "QF", count: 8 },   
+        { code: "SF", count: 4 },   
+        { code: "F", count: 2 }     
       ];
   } 
   else if (totalTeams > 10) {
-      // 9-16 ทีม (เช่น 10 ทีม, 12 ทีม):
-      // ใช้ QF 8 คู่ (รองรับ 16 สล็อต: บน 8 / ล่าง 8)
       roundsToGenerate = [
         { code: "QF", count: 8 },
         { code: "SF", count: 4 },
@@ -173,16 +175,12 @@ async function generateKnockoutSkeleton(tournamentId, handLevel, startMatchNo, g
       ];
   } 
   else if (totalTeams > 4) {
-      // 5-8 ทีม (เช่น 8 ทีม):
-      // ใช้ SF 4 คู่ (รองรับ 8 สล็อต: บน 4 / ล่าง 4)
       roundsToGenerate = [
         { code: "SF", count: 4 },
         { code: "F", count: 2 }
       ];
   } 
   else {
-      // 1-4 ทีม:
-      // ใช้ SF 2 คู่ (รองรับ 4 สล็อต: บน 2 / ล่าง 2)
       roundsToGenerate = [
         { code: "SF", count: 2 },
         { code: "F", count: 2 }
@@ -197,8 +195,6 @@ async function generateKnockoutSkeleton(tournamentId, handLevel, startMatchNo, g
       const masterOrder = currentMatchNo++;
       const matchId = createKoMatchId(handLevel, round.code, masterOrder, 2);
       
-      // Logic ระบุสาย: ครึ่งแรก TOP, ครึ่งหลัง BOTTOM
-      // (ยกเว้น KO16 ในเคส 24 ทีมที่อาจจะเป็น TOP ล้วน แต่ logic นี้แบ่งครึ่งไปก่อนได้ เพราะตอนหยอดทีมจะดู BracketSide เป็นหลัก)
       const side = (i < round.count / 2) ? "TOP" : "BOTTOM";
 
       creates.push({
@@ -245,6 +241,7 @@ async function autoGenerateKnockoutFromStandings({ tournamentId, handLevel }) {
   let allTeams = [];
   groups.forEach(g => {
     g.teams.forEach((t) => {
+      // ใช้ groupRank ที่คำนวณใหม่แล้วจาก getStandingsForSeeding
       allTeams.push({ ...t, groupName: g.groupName });
     });
   });
@@ -269,26 +266,62 @@ async function autoGenerateKnockoutFromStandings({ tournamentId, handLevel }) {
   else {
      // สายบน: เอาที่ 1-2
      upperQualifiers = allTeams.filter(t => t.groupRank <= 2);
-     
-     // สายล่าง: แก้ให้เอาเฉพาะที่ 3-4 (ตัดที่ 5 ทิ้ง)
+     // สายล่าง: เอาที่ 3-4
      lowerQualifiers = allTeams.filter(t => t.groupRank >= 3 && t.groupRank <= 4);
   }
 
-  // --- จัด Seeding และจับสลาก ---
-  upperQualifiers.sort((a, b) => compareStatsOnly(a, b));
-  const half = Math.ceil(upperQualifiers.length / 2);
-  const seeds = upperQualifiers.slice(0, half);
-  const nonSeeds = shuffleArray(upperQualifiers.slice(half));
+  // --- จัด Seeding และจับสลาก (LOGIC ใหม่: เน้นที่ 1 เป็นทีมวาง) ---
+  
+  // 1. แยกกลุ่มที่ 1 (Rank 1) และกลุ่มอื่นๆ
+  const rank1s = upperQualifiers.filter(t => t.groupRank === 1);
+  const others = upperQualifiers.filter(t => t.groupRank !== 1);
+
+  // 2. คำนวณจำนวนคู่ที่ต้องจัด (ครึ่งหนึ่งของทีมทั้งหมด)
+  const seedCount = Math.ceil(upperQualifiers.length / 2);
+
+  let seeds = [];
+  let challengers = [];
+
+  if (rank1s.length >= seedCount) {
+      // กรณี A: ที่ 1 มีเยอะเกิน หรือพอดีเป๊ะ (เช่น 16 ทีม: ที่ 1 มี 4, ต้องการทีมวาง 4)
+      // ให้เรียงความเก่งของที่ 1 ทั้งหมดก่อน
+      rank1s.sort((a, b) => compareStatsOnly(a, b));
+      
+      // ตัดมาเฉพาะจำนวนที่ต้องการเป็น Seeds
+      seeds = rank1s.slice(0, seedCount);
+      
+      // ส่วนที่เกิน (ถ้ามี) ให้ปัดไปรวมกับ Challengers
+      const extraRank1s = rank1s.slice(seedCount);
+      challengers = [...extraRank1s, ...others];
+  } else {
+      // กรณี B: ที่ 1 มีน้อยกว่าจำนวนทีมวางที่ต้องใช้ (เช่น 24 ทีม: ที่ 1 มี 6, ต้องการทีมวาง 8)
+      // ให้เอา Rank 1 ทั้งหมดเป็นทีมวางแน่นอน
+      const definedSeeds = [...rank1s];
+      
+      // หาเพิ่มจากกลุ่มอื่น (เอาที่เก่งที่สุดมาเติมให้ครบ)
+      others.sort((a, b) => compareStatsOnly(a, b)); // เรียงกลุ่มอื่นตามความเก่ง
+      const needed = seedCount - rank1s.length;
+      const filledSeeds = others.slice(0, needed);
+      const remainingOthers = others.slice(needed);
+      
+      seeds = [...definedSeeds, ...filledSeeds];
+      challengers = remainingOthers;
+  }
+
+  // 3. จัดลำดับทีมวาง (Seeds) : เรียงตามความเก่ง (Points > Diff...) 
+  // เพื่อให้ "ที่ 1 ที่เก่งที่สุด" ได้เป็นทีมวางลำดับแรก
+  seeds.sort((a, b) => compareStatsOnly(a, b));
+
+  // 4. จัดลำดับทีมคู่แข่ง (Challengers) : สุ่มจับสลาก (Shuffle) ตามโจทย์
+  const finalChallengers = shuffleArray(challengers);
+
+  // สุ่มสายล่าง
   const lowerShuffled = shuffleArray(lowerQualifiers);
 
   const updateOps = [];
   let updatedCount = 0;
 
-  // 1. หยอดสายบน
-  // เลือกเป้าหมาย: ดูว่าคนเยอะแค่ไหน
-  // - ถ้า <= 4 ทีม -> ลง SF
-  // - ถ้า > 4 และ <= 8 ทีม -> ลง QF
-  // - ถ้า > 8 ทีม -> ลง KO16
+  // 1. หยอดสายบน (Seeds เจอ Random Challengers)
   let upperRoundTarget = "QF";
   if (upperQualifiers.length <= 4) upperRoundTarget = "SF";
   else if (upperQualifiers.length > 8 || is24TeamsRule) upperRoundTarget = "KO16";
@@ -299,24 +332,23 @@ async function autoGenerateKnockoutFromStandings({ tournamentId, handLevel }) {
 
   let uIdx = 0;
   for (let i = 0; i < seeds.length; i++) {
-    // ข้ามแมตช์ที่มีทีมครบแล้ว (กรณีรันซ้ำ)
+    // ข้ามแมตช์ที่มีทีมครบแล้ว
     while (uIdx < upperMatches.length && upperMatches[uIdx].team1 && upperMatches[uIdx].team2) {
         uIdx++;
     }
     if (uIdx >= upperMatches.length) break;
 
     const match = upperMatches[uIdx++];
-    const t1 = seeds[i].teamId;
-    const t2 = nonSeeds[i] ? nonSeeds[i].teamId : null;
+    const t1 = seeds[i].teamId;                   // ทีมวาง (อันดับ 1 ที่เก่งสุดเรียงลงมา)
+    const t2 = finalChallengers[i] ? finalChallengers[i].teamId : null; // ทีมจับสลาก
     
     updateOps.push({
       updateOne: { filter: { _id: match._id }, update: { $set: { team1: t1, team2: t2, status: "scheduled" } } }
     });
   }
 
-  // 2. หยอดสายล่าง
+  // 2. หยอดสายล่าง (จับคู่ตามลำดับที่สุ่ม)
   if (lowerQualifiers.length > 0) {
-      // สายล่างเริ่มรอบเดียวกับสายบนใน level นั้นๆ (ถ้าคนเท่ากัน) หรือปรับตามจำนวนคน
       let lowerRoundTarget = "QF";
       if (lowerQualifiers.length <= 4) lowerRoundTarget = "SF";
 

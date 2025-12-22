@@ -43,7 +43,8 @@ const tournamentSchema = new Schema({
 
   // กติกาการให้คะแนนในตาราง (Points)
   rules: {
-    pointsWin: { type: Number, default: 2 },  // Mini อาจจะอยากได้ 3
+    // ✅ [CHANGE] แก้ Default เป็น 3 คะแนน (Root Cause Fix)
+    pointsWin: { type: Number, default: 3 },  
     pointsLose: { type: Number, default: 0 },
     pointsDraw: { type: Number, default: 1 }
   },

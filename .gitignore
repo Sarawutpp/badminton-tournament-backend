@@ -14,3 +14,12 @@ coverage
 # OS
 .DS_Store
 Thumbs.db
+
+# --- Uploaded / Generated Files ---
+# ป้องกันไฟล์รูปทีมที่ระบบสร้างขึ้น (เฉพาะไฟล์รูปภาพ)
+team-*.png
+team-*.jpg
+team-*.jpeg
+
+# ถ้าในอนาคตมีการสร้างโฟลเดอร์เก็บรูป แนะนำให้กันโฟลเดอร์นั้นด้วย
+uploads/

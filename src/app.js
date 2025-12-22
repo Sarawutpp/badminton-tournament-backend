@@ -1,8 +1,9 @@
-// app.js
+// src/app.js
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
+const path = require("path");
 const { connectDB } = require("./db");
 
 const {
@@ -32,9 +33,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// ถ้าอยู่หลัง Nginx/Proxy และมี cookie ให้เปิด trust proxy ได้
-// app.set('trust proxy', 1);
-
 const corsOptions = {
   origin(origin, cb) {
     if (!origin) return cb(null, true); // อนุญาตพวก curl / health-check
@@ -52,6 +50,10 @@ app.options("*", cors(corsOptions));
 
 app.use(express.json());
 app.use(cookieParser());
+
+// ✅ [แก้ไขจุดนี้] ใช้ process.cwd() เพื่อให้ชี้ไปที่โฟลเดอร์ uploads ใน Root Project เสมอ
+// ไม่ว่า app.js จะอยู่ใน src หรือที่ไหนก็ตาม ระบบจะหาเจอ
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 // ---------- Auth Middleware แบบ Global ----------
 app.use(authMiddleware);
@@ -81,7 +83,7 @@ app.use("/api/players", require("./routes/player.routes"));
 app.use("/api/teams", require("./routes/team.routes"));
 app.use("/api/matches", require("./routes/match.routes"));
 app.use("/api/tournaments", require("./routes/tournament.routes"));
-app.use("/api/standings", require("./routes/standings.routes")); // ✅ เพิ่มบรรทัดนี้ไว้แล้วเดิม
+app.use("/api/standings", require("./routes/standings.routes")); 
 
 // ===== DB Connect =====
 (async () => {

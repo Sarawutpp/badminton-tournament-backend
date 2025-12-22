@@ -4,32 +4,34 @@ const { Schema } = mongoose;
 
 const teamSchema = new Schema(
   {
-    // [CHANGE] เปลี่ยนจาก String เป็น ObjectId Reference
     tournamentId: {
       type: Schema.Types.ObjectId,
       ref: "Tournament",
       required: true,
       index: true,
-      // เอา set: ... ออก เพราะเราต้องการ ObjectId จริงๆ ไม่ใช่ String "default"
     },
 
     teamCode: {
       type: String,
       required: true,
-      unique: true, // ป้องกันซ้ำ
+      unique: true,
     },
 
     handLevel: { type: String, required: true, index: true, trim: true },
     group: { type: String, trim: true },
     groupOrder: { type: Number, default: 0 },
     teamName: { type: String, required: true, trim: true },
+    
+    // [NEW] เก็บ URL รูปภาพทีม
+    teamPhotoUrl: { type: String, default: "" },
+
     seedNo: { type: Number, default: 0 },
     manualRank: { type: Number, default: 0 },
 
     players: [{ type: Schema.Types.ObjectId, ref: "Player", required: true }],
     note: { type: String, trim: true },
 
-    // Stats fields (เหมือนเดิม)
+    // Stats fields
     matchesPlayed: { type: Number, default: 0 },
     wins: { type: Number, default: 0 },
     draws: { type: Number, default: 0 },

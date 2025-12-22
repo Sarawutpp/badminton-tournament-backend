@@ -9,34 +9,97 @@ const Tournament = require("../models/tournament.model");
 const knockoutService = require("../services/knockout.service");
 const { 
   calculateSetsAndScores, 
-  applyTeamStats, 
-  revertTeamStats 
+  decideMatchOutcome, 
+  applyTeamStats 
 } = require("../utils/scoreUtils");
 const { authMiddleware, requireAdmin } = require("./auth.routes");
 
 // Helper: ดึงกติกา (Rules) จาก DB
 async function getTournamentRules(tournamentId) {
   if (!tournamentId || !mongoose.Types.ObjectId.isValid(tournamentId)) {
-    return { pointsWin: 2, pointsDraw: 1, pointsLose: 0 };
+    // ✅ แก้ Default เป็น 3 คะแนน
+    return { pointsWin: 3, pointsDraw: 1, pointsLose: 0 };
   }
   const tour = await Tournament.findById(tournamentId).select("rules").lean();
-  return tour?.rules || { pointsWin: 2, pointsDraw: 1, pointsLose: 0 };
+  // ✅ แก้ Default เป็น 3 คะแนน
+  return tour?.rules || { pointsWin: 3, pointsDraw: 1, pointsLose: 0 };
+}
+
+// Helper ใหม่: นับคะแนนใหม่เฉพาะทีมที่ระบุ (Repair Stats)
+async function syncTeamStats(teamId, handLevel, tournamentId) {
+  if (!teamId) return;
+  
+  const matches = await Match.find({
+    $or: [{ team1: teamId }, { team2: teamId }],
+    handLevel,
+    tournamentId,
+    roundType: "group",
+    status: "finished"
+  });
+
+  const rules = await getTournamentRules(tournamentId);
+
+  let stats = {
+    matchesPlayed: 0, wins: 0, draws: 0, losses: 0, points: 0,
+    scoreFor: 0, scoreAgainst: 0, scoreDiff: 0,
+    setsFor: 0, setsAgainst: 0, setsDiff: 0,
+    matchScores: [] 
+  };
+
+  for (const m of matches) {
+    const isTeam1 = String(m.team1) === String(teamId);
+    
+    const result = decideMatchOutcome({
+        sets: m.sets,
+        gamesToWin: m.gamesToWin,
+        allowDraw: m.allowDraw
+    });
+    
+    const { outcome, score1, score2, setsWon1, setsWon2 } = result;
+
+    stats.matchesPlayed++;
+    
+    const myScore = isTeam1 ? score1 : score2;
+    const oppScore = isTeam1 ? score2 : score1;
+    stats.scoreFor += myScore;
+    stats.scoreAgainst += oppScore;
+    
+    const mySets = isTeam1 ? setsWon1 : setsWon2;
+    const oppSets = isTeam1 ? setsWon2 : setsWon1;
+    stats.setsFor += mySets;
+    stats.setsAgainst += oppSets;
+
+    if (outcome === "draw") {
+        stats.draws++;
+        stats.points += (rules.pointsDraw ?? 1);
+        stats.matchScores.push(rules.pointsDraw ?? 1);
+    } else if ((isTeam1 && outcome === "team1") || (!isTeam1 && outcome === "team2")) {
+        stats.wins++;
+        // ✅ แก้ Default เป็น 3 คะแนน
+        stats.points += (rules.pointsWin ?? 3); 
+        stats.matchScores.push(rules.pointsWin ?? 3);
+    } else {
+        stats.losses++;
+        stats.points += (rules.pointsLose ?? 0);
+        stats.matchScores.push(rules.pointsLose ?? 0);
+    }
+  }
+
+  stats.scoreDiff = stats.scoreFor - stats.scoreAgainst;
+  stats.setsDiff = stats.setsFor - stats.setsAgainst;
+
+  await Team.findByIdAndUpdate(teamId, { $set: stats });
 }
 
 // ------------------------------------------------------------------
 // Routes
 // ------------------------------------------------------------------
 
-// ==========================================
-// 1. Special Actions (Mock & Auto Generate)
-// ==========================================
-
-// ✅ Mock Scores Route
+// 1. Mock Scores Route
 router.post("/mock-scores", authMiddleware, requireAdmin, async (req, res, next) => {
   try {
     const { handLevel, tournamentId } = req.body;
     
-    // 1. สร้าง Filter หาแมตช์ที่ยังไม่แข่ง และต้องเป็น Group เท่านั้น
     const filter = {
       roundType: "group", 
       status: "scheduled"
@@ -44,29 +107,24 @@ router.post("/mock-scores", authMiddleware, requireAdmin, async (req, res, next)
     
     if (handLevel) filter.handLevel = handLevel;
     
-    // เช็ค tournamentId เพื่อความปลอดภัย
     if (tournamentId && mongoose.Types.ObjectId.isValid(tournamentId)) {
       filter.tournamentId = tournamentId;
     }
 
-    // 2. หาแมตช์
     const matches = await Match.find(filter);
 
     if (matches.length === 0) {
       return res.json({ message: "ไม่พบแมตช์ที่ต้อง Mock (อาจจะแข่งจบหมดแล้ว)" });
     }
 
-    // 3. ดึง Rules มาเตรียมไว้
     const rules = await getTournamentRules(tournamentId);
 
     let count = 0;
     for (const m of matches) {
-      // สุ่มผู้ชนะ (1 หรือ 2)
       const winnerIdx = Math.random() > 0.5 ? 1 : 2;
-      const isThreeSets = Math.random() > 0.7; // 30% โอกาสเกิด 3 เซ็ต
+      const isThreeSets = Math.random() > 0.7; 
       
       let sets = [];
-      // สร้างคะแนนจำลอง
       if (winnerIdx === 1) { 
          if(isThreeSets) sets = [{t1:21,t2:19}, {t1:18,t2:21}, {t1:21,t2:15}];
          else sets = [{t1:21,t2:15}, {t1:21,t2:12}];
@@ -75,19 +133,15 @@ router.post("/mock-scores", authMiddleware, requireAdmin, async (req, res, next)
          else sets = [{t1:10,t2:21}, {t1:15,t2:21}];
       }
 
-      // คำนวณสรุปผล
       const calc = calculateSetsAndScores(sets);
       
       m.sets = calc.normalizedSets;
       m.score1 = calc.score1;
       m.score2 = calc.score2;
-      
-      // Legacy fields update
       m.set1Score1 = calc.normalizedSets[0]?.t1 || 0;
       m.set1Score2 = calc.normalizedSets[0]?.t2 || 0;
       m.set2Score1 = calc.normalizedSets[1]?.t1 || 0;
       m.set2Score2 = calc.normalizedSets[1]?.t2 || 0;
-      
       m.status = "finished";
       
       if (calc.setsWon1 > calc.setsWon2) m.winner = m.team1;
@@ -95,10 +149,7 @@ router.post("/mock-scores", authMiddleware, requireAdmin, async (req, res, next)
       else m.winner = null;
 
       const savedMatch = await m.save();
-      
-      // ✅ Mock เฉพาะ Group จึงเรียก applyTeamStats ได้เลย (เพราะ filter ไว้แล้ว)
       await applyTeamStats(savedMatch, rules);
-      
       count++;
     }
 
@@ -113,7 +164,7 @@ router.post("/mock-scores", authMiddleware, requireAdmin, async (req, res, next)
   }
 });
 
-// ✅ Generate Knockout Auto
+// 2. Generate Knockout Auto
 router.post("/generate-knockout-auto", authMiddleware, requireAdmin, async (req, res, next) => {
   try {
     const { handLevel, round, tournamentId } = req.body;
@@ -125,7 +176,7 @@ router.post("/generate-knockout-auto", authMiddleware, requireAdmin, async (req,
     const result = await knockoutService.autoGenerateKnockoutFromStandings({
       handLevel,
       roundCode: round,
-      tournamentId // ส่ง tournamentId เข้าไปด้วย
+      tournamentId 
     });
 
     res.json(result);
@@ -134,33 +185,16 @@ router.post("/generate-knockout-auto", authMiddleware, requireAdmin, async (req,
   }
 });
 
-// ==========================================
-// 2. Standard CRUD Routes
-// ==========================================
-
-// GET Matches
+// Standard CRUD Routes (ละไว้ส่วนเดิม... เหมือนเดิมทุกประการ)
+// ... (ส่วน GET, POST, PUT, DELETE ปกติ ไม่ต้องแก้)
 router.get("/", async (req, res, next) => {
   try {
     const { 
-      tournamentId, 
-      handLevel, 
-      group, 
-      roundType, 
-      round, 
-      status, 
-      q, 
-      sort, 
-      page, 
-      pageSize, 
-      court 
+      tournamentId, handLevel, group, roundType, round, status, q, sort, page, pageSize, court 
     } = req.query;
     
     const filter = {};
-    
-    if (tournamentId && mongoose.Types.ObjectId.isValid(tournamentId)) {
-       filter.tournamentId = tournamentId;
-    } 
-
+    if (tournamentId && mongoose.Types.ObjectId.isValid(tournamentId)) filter.tournamentId = tournamentId;
     if (handLevel) filter.handLevel = handLevel;
     if (group) filter.group = group;
     if (roundType) filter.roundType = roundType;
@@ -172,18 +206,12 @@ router.get("/", async (req, res, next) => {
       if (arr.length > 0) filter.status = { $in: arr };
     }
 
-    // Search Logic
     if (q) {
       const regex = new RegExp(q, "i");
-      
       const teamFilter = { teamName: regex };
-      if (filter.tournamentId) {
-          teamFilter.tournamentId = filter.tournamentId;
-      }
-
+      if (filter.tournamentId) teamFilter.tournamentId = filter.tournamentId;
       const matchingTeams = await Team.find(teamFilter).select('_id');
       const teamIds = matchingTeams.map(t => t._id);
-
       filter.$or = [
           { matchId: regex },
           { round: regex },
@@ -222,9 +250,7 @@ router.get("/", async (req, res, next) => {
 
 router.get("/:id", async (req, res, next) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-        return res.status(404).json({message:"Invalid ID"});
-    }
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({message:"Invalid ID"});
     const m = await Match.findById(req.params.id).populate("team1").populate("team2");
     if(!m) return res.status(404).json({message:"Not found"});
     res.json(m);
@@ -280,22 +306,11 @@ router.delete("/:id", authMiddleware, requireAdmin, async (req, res, next) => {
   } catch(e) { next(e); }
 });
 
-// ==========================================
-// 3. Scoring Route (Manual Update)
-// ==========================================
+// Scoring Route
 router.put("/:id/score", authMiddleware, requireAdmin, async (req, res, next) => {
   try {
     const match = await Match.findById(req.params.id);
     if (!match) return res.status(404).json({ message: "Match not found" });
-
-    // 1. เตรียม Rules ก่อน
-    const rules = await getTournamentRules(match.tournamentId);
-
-    // 2. ถ้าเคยแข่งจบแล้ว ให้ถอยค่าสถิติเดิมออกก่อน (Revert)
-    // ✅ [FIX] เช็คเพิ่ม: ต้องเป็น Group เท่านั้นถึงจะถอยแต้ม
-    if (match.status === "finished" && match.roundType === "group") {
-        await revertTeamStats(match, rules);
-    }
 
     const { sets: rawSets, gamesToWin: gw, allowDraw: ad, status: st } = req.body || {};
 
@@ -337,13 +352,13 @@ router.put("/:id/score", authMiddleware, requireAdmin, async (req, res, next) =>
 
     const savedMatch = await match.save();
 
-    // 3. ใส่ค่าสถิติใหม่เข้าไป (Apply)
-    // ✅ [FIX] เช็คเพิ่ม: ต้องเป็น Group เท่านั้นถึงจะบวกแต้ม
-    if (savedMatch.roundType === "group") {
-       await applyTeamStats(savedMatch, rules);
+    if (savedMatch.roundType === "group" || savedMatch.group) {
+        await Promise.all([
+            syncTeamStats(savedMatch.team1, savedMatch.handLevel, savedMatch.tournamentId),
+            syncTeamStats(savedMatch.team2, savedMatch.handLevel, savedMatch.tournamentId)
+        ]);
     }
 
-    // Auto-advance Knockout Winner
     if (savedMatch.roundType === "knockout" && savedMatch.status === "finished") {
       await knockoutService.advanceKnockoutWinner(savedMatch);
     }
