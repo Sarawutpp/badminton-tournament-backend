@@ -22,6 +22,12 @@ const tournamentSchema = new Schema({
         enum: ["TOP2_UPPER_REST_LOWER", "TOP2_PLUS_4BEST_3RD", "STANDARD"]
     },
 
+    shuttlecock: {
+        pricePerCoupon: { type: Number, default: 50 }, // ราคาต่อใบ
+        quotaSingle: { type: Number, default: 5 },     // โควตาเดี่ยว
+        quotaDouble: { type: Number, default: 10 },    // โควตาคู่
+    },
+
     // Config กติกาการแข่ง (แยกตามรอบ)
     matchConfig: {
         // รอบแบ่งกลุ่ม (Mini เล่น 1 เกม, Standard เล่น 2 ใน 3)

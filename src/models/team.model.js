@@ -44,6 +44,7 @@ const teamSchema = new Schema(
     setsAgainst: { type: Number, default: 0 },
     setsDiff: { type: Number, default: 0 },
     matchScores: { type: [String], default: [] },
+    couponsUsed: { type: Number, default: 0 },
   },
   { timestamps: true }
 );

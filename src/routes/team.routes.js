@@ -74,6 +74,82 @@ router.post(
     }
   }
 );
+router.post("/import-bulk", authMiddleware, requireAdmin, async (req, res) => {
+  const { tournamentId, data } = req.body; 
+  // data คาดหวังรูปแบบ: [{ teamName, handLevel, players: [{fullName, nickname}, ...] }]
+
+  if (!Array.isArray(data) || data.length === 0) {
+    return res.status(400).json({ message: "Invalid data format" });
+  }
+
+  try {
+    const results = [];
+    const errors = [];
+
+    for (const item of data) {
+      try {
+        // 1. ตรวจสอบหรือสร้างผู้เล่น (Check or Create Players)
+        const playerIds = [];
+        
+        for (const p of item.players) {
+          if (!p.fullName) continue;
+
+          // ค้นหาว่ามีชื่อนี้ในรายการนี้หรือยัง
+          let player = await Player.findOne({ 
+            fullName: p.fullName.trim(),
+            tournamentId: tournamentId || "default"
+          });
+
+          // ถ้าไม่มี ให้สร้างใหม่
+          if (!player) {
+            player = new Player({
+              tournamentId: tournamentId || "default",
+              playerCode: `PL-${Math.random().toString(36).slice(2, 8).toUpperCase()}`, // Gen Code ชั่วคราว
+              fullName: p.fullName.trim(),
+              nickname: p.nickname ? p.nickname.trim() : "",
+              age: 0 
+            });
+            await player.save();
+          }
+          playerIds.push(player._id);
+        }
+
+        // 2. สร้างทีม (Create Team)
+        // สร้าง Team Code (ใช้ฟังก์ชัน generateTeamCode ที่มีอยู่แล้วในไฟล์เดิม)
+        const teamCode = generateTeamCode(item.handLevel);
+        
+        const newTeam = new Team({
+          tournamentId: tournamentId || "default",
+          teamCode: teamCode,
+          teamName: item.teamName,
+          handLevel: item.handLevel,
+          // ถ้ามีผู้เล่นมากกว่า 1 คน ถือเป็นคู่ (Doubles)
+          competitionType: playerIds.length > 1 ? "Doubles" : "Singles",
+          players: playerIds,
+          manualRank: 0
+        });
+
+        const savedTeam = await newTeam.save();
+        results.push(savedTeam);
+
+      } catch (innerErr) {
+        console.error("Error importing team:", item.teamName, innerErr);
+        errors.push({ team: item.teamName, error: innerErr.message });
+      }
+    }
+
+    res.json({ 
+      success: true, 
+      importedCount: results.length, 
+      errorCount: errors.length,
+      errors: errors 
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: err.message });
+  }
+});
 
 // GET List Teams
 router.get("/", async (req, res) => {

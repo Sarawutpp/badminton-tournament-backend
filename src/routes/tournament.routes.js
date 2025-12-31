@@ -171,6 +171,42 @@ router.get("/:id", async (req, res, next) => {
     } catch(e) { next(e); }
 });
 
+router.put("/:id", authMiddleware, requireAdmin, async (req, res, next) => {
+  try {
+    const { settings, ...otherUpdates } = req.body;
+    
+    const tournament = await Tournament.findById(req.params.id);
+    if (!tournament) return res.status(404).json({ message: "Tournament not found" });
+
+    // Update Top Level Fields
+    Object.keys(otherUpdates).forEach(key => {
+        tournament[key] = otherUpdates[key];
+    });
+
+    // Merge Settings
+    if (settings) {
+        // Merge Shuttlecock Config
+        if (settings.shuttlecock) {
+            tournament.settings.shuttlecock = {
+                ...tournament.settings.shuttlecock, 
+                ...settings.shuttlecock             
+            };
+        }
+        // Merge Other Configs
+        if (settings.matchConfig) tournament.settings.matchConfig = settings.matchConfig;
+        if (settings.categories) tournament.settings.categories = settings.categories;
+        if (settings.totalCourts) tournament.settings.totalCourts = settings.totalCourts;
+        if (settings.qualificationType) tournament.settings.qualificationType = settings.qualificationType;
+        if (settings.maxScore) tournament.settings.maxScore = settings.maxScore;
+    }
+
+    const updated = await tournament.save();
+    res.json(updated);
+  } catch (e) {
+    next(e);
+  }
+});
+
 // ----------------------------------------------------------------------
 // LOGIC เดิม (Helpers & Group Generation)
 // ----------------------------------------------------------------------

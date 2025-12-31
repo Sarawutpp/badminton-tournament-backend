@@ -2,10 +2,13 @@
 const mongoose = require("mongoose");
 const { Schema } = mongoose;
 
-const setSchema = new Schema({
+const setSchema = new Schema(
+  {
     t1: { type: Number, default: 0 },
     t2: { type: Number, default: 0 },
-}, { _id: false });
+  },
+  { _id: false }
+);
 
 const matchSchema = new Schema(
   {
@@ -19,14 +22,21 @@ const matchSchema = new Schema(
 
     handLevel: { type: String, required: true, index: true },
     group: { type: String, default: null, index: true },
-    roundType: { type: String, enum: ["group", "knockout", "manual"], default: "group", index: true },
+    roundType: {
+      type: String,
+      enum: ["group", "knockout", "manual"],
+      default: "group",
+      index: true,
+    },
     round: { type: String, default: null, index: true },
     groupRound: { type: Number, default: null },
     bracketSide: { type: String, default: null, trim: true },
     matchNo: { type: Number, default: null, index: true },
     orderIndex: { type: Number, default: 0, index: true },
-    matchId: { type: String, unique: true, sparse: true, index: true },
-    
+
+    // [แก้ไขจุดที่ 1] เอา unique: true ออก (เพื่อให้ชื่อซ้ำได้ถ้าอยู่คนละทัวร์)
+    matchId: { type: String, sparse: true },
+
     court: { type: String, default: null },
     scheduledAt: { type: Date, default: null },
 
@@ -51,7 +61,8 @@ const matchSchema = new Schema(
     score2: { type: Number, default: 0 },
 
     winner: { type: Schema.Types.ObjectId, ref: "Team", default: null },
-    
+    shuttlecockUsed: { type: Number, default: 0 },
+
     status: {
       type: String,
       enum: ["pending", "scheduled", "in-progress", "finished", "cancelled"],
@@ -66,8 +77,34 @@ const matchSchema = new Schema(
 );
 
 // Indexing เดิม (ยังคงใช้ได้ดี)
-matchSchema.index({ tournamentId: 1, handLevel: 1, roundType: 1, group: 1, groupRound: 1, matchNo: 1 });
-matchSchema.index({ tournamentId: 1, handLevel: 1, roundType: 1, round: 1, bracketSide: 1, matchNo: 1 });
-matchSchema.index({ tournamentId: 1, handLevel: 1, roundType: 1, round: 1, matchNo: 1 });
+matchSchema.index({
+  tournamentId: 1,
+  handLevel: 1,
+  roundType: 1,
+  group: 1,
+  groupRound: 1,
+  matchNo: 1,
+});
+matchSchema.index({
+  tournamentId: 1,
+  handLevel: 1,
+  roundType: 1,
+  round: 1,
+  bracketSide: 1,
+  matchNo: 1,
+});
+matchSchema.index({
+  tournamentId: 1,
+  handLevel: 1,
+  roundType: 1,
+  round: 1,
+  matchNo: 1,
+});
+
+// [แก้ไขจุดที่ 2] เพิ่ม Index ใหม่: ห้าม matchId ซ้ำ "เฉพาะในทัวร์นาเมนต์เดียวกัน"
+matchSchema.index(
+  { tournamentId: 1, matchId: 1 },
+  { unique: true, sparse: true }
+);
 
 module.exports = mongoose.model("Match", matchSchema);
