@@ -226,6 +226,7 @@ async function generateKnockoutSkeleton(
 
   // Dynamic Check Model
   const is24TeamsModel = totalTeams > 20 && totalTeams <= 24;
+  const is32TeamsModel = totalTeams > 24;
 
   let roundsToGenerate = [];
 
