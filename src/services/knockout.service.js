@@ -229,10 +229,19 @@ async function generateKnockoutSkeleton(
 
   let roundsToGenerate = [];
 
-  if (is24TeamsModel || totalTeams > 16) {
+  if (is32TeamsModel) {
+    // กรณี 32 ทีม: ต้องเจน KO16 จำนวน 16 คู่ (บน 8 / ล่าง 8)
+    roundsToGenerate = [
+      { code: "KO16", count: 16 },
+      { code: "QF", count: 8 },
+      { code: "SF", count: 4 },
+      { code: "F", count: 2 },
+    ];
+  } else if (is24TeamsModel || totalTeams > 16) {
+    // กรณี 24 ทีม หรือ 16-20 ทีม: ใช้ Logic เดิม
     roundsToGenerate = [
       { code: "KO16", count: 8 },
-      { code: "QF", count: 8 },
+      { code: "QF", count: 8 }, // ตรงนี้จริงๆ อาจจะเหลือ 4 ได้ถ้าเป็น Knockout ปกติ แต่ถ้าจะเผื่อสายล่างด้วยใช้ 8 ก็ได้ครับ
       { code: "SF", count: 4 },
       { code: "F", count: 2 },
     ];
