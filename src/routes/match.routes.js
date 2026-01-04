@@ -426,6 +426,7 @@ router.put(
         "status",
         "matchNo",
         "day",
+        "isHold",
       ];
       const up = {};
       keys.forEach((k) => {

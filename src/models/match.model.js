@@ -44,6 +44,7 @@ const matchSchema = new Schema(
     team2: { type: Schema.Types.ObjectId, ref: "Team", default: null },
 
     isBye: { type: Boolean, default: false },
+    isHold: { type: Boolean, default: false },
 
     // Legacy fields (เก็บไว้ก่อนตามโค้ดเดิม)
     set1Score1: { type: Number, default: 0 },
