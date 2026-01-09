@@ -275,7 +275,8 @@ router.get("/", async (req, res, next) => {
       group,
       roundType,
       round,
-      status,
+      status, // ของเดิม
+      scoringStatus, // ✅ [NEW] รับค่าสถานะการกรอกคะแนน (pending/finished)
       q,
       sort,
       page,
@@ -292,6 +293,7 @@ router.get("/", async (req, res, next) => {
     if (round) filter.round = round;
     if (court) filter.court = String(court);
 
+    // Filter Status แบบเดิม (ถ้ามีการส่งมา)
     if (status) {
       const arr = status
         .split(",")
@@ -300,29 +302,70 @@ router.get("/", async (req, res, next) => {
       if (arr.length > 0) filter.status = { $in: arr };
     }
 
+    // ✅ [NEW] Logic กรองตามสถานะคะแนน
+    if (scoringStatus === "pending") {
+      // Pending Tab: เอาแมตช์ที่ (ยังไม่แข่ง OR กำลังแข่ง OR (จบแล้วแต่ยังไม่มีคะแนน))
+      filter.$or = [
+        { status: { $ne: "finished" } }, // scheduled, in-progress
+        {
+          status: "finished",
+          $and: [
+            { $or: [{ sets: { $size: 0 } }, { sets: { $exists: false } }] }, // ไม่มีเซ็ต
+            { $or: [{ score1: 0 }, { score1: { $exists: false } }] }, // คะแนนเป็น 0
+            { $or: [{ score2: 0 }, { score2: { $exists: false } }] },
+          ],
+        },
+      ];
+    } else if (scoringStatus === "finished") {
+      // Finished Tab: เอาแมตช์ที่มีคะแนนแล้วเท่านั้น
+      filter.$or = [
+        { sets: { $exists: true, $not: { $size: 0 } } },
+        { score1: { $gt: 0 } },
+        { score2: { $gt: 0 } },
+      ];
+    }
+
     if (q) {
       const regex = new RegExp(q, "i");
       const teamFilter = { teamName: regex };
       if (filter.tournamentId) teamFilter.tournamentId = filter.tournamentId;
       const matchingTeams = await Team.find(teamFilter).select("_id");
       const teamIds = matchingTeams.map((t) => t._id);
-      filter.$or = [
+
+      // ผสานกับ $or ที่อาจมีอยู่แล้วจาก scoringStatus
+      const qCondition = [
         { matchId: regex },
         { round: regex },
         { team1: { $in: teamIds } },
         { team2: { $in: teamIds } },
       ];
+
+      if (filter.$or) {
+        filter.$and = [
+          { $or: filter.$or }, // เงื่อนไข scoringStatus เดิม
+          { $or: qCondition }, // เงื่อนไข search
+        ];
+        delete filter.$or;
+      } else {
+        filter.$or = qCondition;
+      }
     }
 
-    const sOpt = {};
+    // ✅ [NEW] Default Sort
+    // ถ้าดูแท็บ Pending: ให้เรียง finished(no score) -> in-progress -> scheduled
+    // (เรียง status ตามตัวอักษร: f -> i -> s) ดังนั้นใช้ status: 1 ได้เลย
+    let sOpt = {};
     if (sort) {
       const parts = sort.split(",");
       parts.forEach((p) => {
         const [k, d] = p.split(":");
         sOpt[k] = d === "desc" ? -1 : 1;
       });
+    } else if (scoringStatus === "pending") {
+      // ให้แมตช์ที่จบแล้ว(รอกรอก) และกำลังแข่ง ขึ้นก่อน
+      sOpt = { status: 1, matchNo: 1 };
     } else {
-      sOpt.matchNo = 1;
+      sOpt = { matchNo: 1 };
     }
 
     const p = Math.max(1, parseInt(page) || 1);
