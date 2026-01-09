@@ -604,14 +604,18 @@ router.put(
         await knockoutService.advanceKnockoutWinner(savedMatch);
       }
 
-      // 6. (Optional) อัปเดตสถิติทีมกรณี Group Stage (Team Stats)
-      // ถ้าต้องการให้สถิติคะแนนรวมอัปเดตด้วย ให้เปิด Comment นี้
-      /*
-    if (savedMatch.roundType === 'group') {
-        await syncTeamStats(savedMatch.team1, match.handLevel, match.tournamentId);
-        await syncTeamStats(savedMatch.team2, match.handLevel, match.tournamentId);
-    }
-    */
+      if (savedMatch.roundType === "group") {
+        await syncTeamStats(
+          savedMatch.team1,
+          match.handLevel,
+          match.tournamentId
+        );
+        await syncTeamStats(
+          savedMatch.team2,
+          match.handLevel,
+          match.tournamentId
+        );
+      }
 
       res.json(savedMatch);
     } catch (err) {
